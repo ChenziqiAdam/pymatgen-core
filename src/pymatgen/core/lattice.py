@@ -278,7 +278,7 @@ class Lattice(MSONable):
             gvec = hkl @ recip_cryst.matrix
             d_vector = 1.0 / np.linalg.norm(gvec)
             _sc.check_d_hkl_formula_consistency(
-                d_metric, d_vector, np.abs(hkl).max(), np.linalg.cond(self._matrix)
+                d_metric, d_vector, np.abs(hkl).max(), np.linalg.cond(g_star)
             )
         return d_metric
 

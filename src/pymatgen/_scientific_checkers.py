@@ -164,11 +164,11 @@ def check_lll_frac_coord_roundtrip(f_orig, f_roundtrip, cond):
     trigger_if(diff > tol, "PM-LAT-004", diff=diff, tol=tol)
 
 
-_LAT_COND_CEILING = 1.0e4  # shared with PM-STR-004; see FIX notes below
+_LAT_COND_CEILING = 1.0e4  # PM-STR-004 only; see that checker's FIX notes
 
 
 @_guard
-def check_d_hkl_formula_consistency(d_metric, d_vector, max_hkl, cond):
+def check_d_hkl_formula_consistency(d_metric, d_vector, max_hkl, cond_g_star):
     """PM-LAT-005: d_hkl's metric-tensor formula matches the vector-norm formula.
 
     FIX (2026-09-17, round-1 triggerability): the invariant is true in exact
@@ -178,30 +178,37 @@ def check_d_hkl_formula_consistency(d_metric, d_vector, max_hkl, cond):
     triggering synthetic lattice (two nearly-parallel long vectors,
     cond(matrix) ~ 2e7): the vector-norm path matched to 16 digits, the
     metric-tensor path had lost ~1% of relative accuracy to cancellation.
-    cond(matrix) itself does not correlate with the severity (it stayed
-    flat at ~2e7 while the observed error grew ~10 orders of magnitude as
-    the near-parallel skew shrank), so it cannot be used as a *tolerance*
-    scaling variable here -- but a cond(matrix) >= 1e4 ceiling on the
-    PRECONDITION is well justified: a sweep of realistic crystallographic
-    stress cases (elongated tetragonal cells up to c/a=100, monoclinic
-    cells at acute/obtuse angles from 10 to 170 degrees, anisotropic
-    orthorhombic cells up to 50:1) found a worst cond(matrix) of ~100,
-    five orders of magnitude below the adversarial synthetic lattice's
-    ~2e7 -- no Niggli/LLL-reduced or otherwise crystallographically
-    meaningful lattice approaches this regime. Re-derived the existing
-    tolerance formula restricted to cond(matrix) < 1e4 (12 lattice families
-    x 8 length/angle variants x 6 Miller indices, 288 trials): worst
-    observed diff/(eps64*max_hkl*d) ratio was 1.84, comfortably inside the
-    existing 100x headroom -- only the precondition needed narrowing, not
-    the tolerance multiplier itself. Re-verified: the original triggering
-    near-rank-deficient synthetic lattice is now excluded by the
-    precondition (silent), and isolated-sensitivity with a synthetic
-    mismatch on an ordinary (cond < 1e4) lattice still fires.
+
+    FIX 2 (2026-09-18, second-round re-verification): the FIX above used a
+    cond(matrix) >= 1e4 precondition ceiling, justified against a moderate
+    stress-case sweep (angles 10-170 degrees). Re-running the fixed checker
+    through triggerability_probe.py's full lattice zoo found a NEW firing on
+    `Lattice.from_parameters(20, 20, 0.2, 90, 90, 179)` -- a legitimate,
+    crystallographically ordinary highly-acute cell with cond(matrix)=141,
+    comfortably inside the 1e4 ceiling, yet still an 11-order-of-magnitude
+    violation. Diagnosis: cond(matrix) was never the right quantity in the
+    first place -- the quadratic form that actually suffers cancellation is
+    hkl @ G* @ hkl.T, so the relevant conditioning is cond(G*) (the metric
+    tensor itself), not cond(matrix) (the direct lattice matrix). On this
+    lattice cond(matrix)=141 but cond(G*)~2e4 -- the two diverge sharply
+    for a highly acute/obtuse cell because forming G* = A @ A.T squares the
+    conditioning of near-parallel rows. Replaced the cond(matrix)
+    precondition-ceiling approach entirely with a cond(G*)-scaled TOLERANCE
+    (the originally-recommended option, now using the right variable): a
+    1330-trial sweep (the same lattice families/scales as before, plus
+    angles from 1 to 179.9 degrees, plus the original adversarial lattice)
+    scoring diff/(eps64*max_hkl*d_metric*cond(G*)) gave a worst ratio of
+    0.41, essentially independent of how extreme the angle or how
+    ill-conditioned matrix/G* becomes. Tolerance set to
+    100x*eps64*max_hkl*d_metric*max(1,cond(G*)) for 100x headroom; no
+    precondition exclusion needed at all -- this scaling correctly covers
+    both the acute-angle case and the original near-rank-deficient
+    synthetic lattice in the same sweep. Re-verified: both the original
+    triggering lattice and the newly found near_singular_2 case are now
+    silent; isolated-sensitivity with a synthetic mismatch still fires.
     """
-    if cond >= _LAT_COND_CEILING:
-        return
     diff = abs(d_metric - d_vector)
-    tol = 100.0 * eps64 * max(max_hkl, 1) * abs(d_metric)
+    tol = 100.0 * eps64 * max(max_hkl, 1) * abs(d_metric) * max(cond_g_star, 1.0)
     trigger_if(diff > tol, "PM-LAT-005", diff=diff, tol=tol)
 
 
