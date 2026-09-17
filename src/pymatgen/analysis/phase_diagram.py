@@ -36,6 +36,7 @@ from pymatgen.util.coord import Simplex, in_coord_list
 from pymatgen.util.due import Doi, due
 from pymatgen.util.plotting import pretty_plot
 from pymatgen.util.string import htmlify, latexify
+from pymatgen import _scientific_checkers as _sc
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Iterable, Iterator, Sequence
@@ -761,11 +762,28 @@ class PhaseDiagram(MSONable):
         """
         facet, simplex = self._get_facet_and_simplex(comp)
         decomp_amts = simplex.bary_coords(self.pd_coords(comp))
-        return {
+        result = {
             self.qhull_entries[f]: amt
             for f, amt in zip(facet, decomp_amts, strict=True)
             if abs(amt) > PhaseDiagram.numerical_tol
         }
+        if _sc.enabled():
+            _sc.check_decomposition_convex_combination(
+                sum(decomp_amts), min(decomp_amts), self.dim
+            )
+            recon: dict = {}
+            for f, amt in zip(facet, decomp_amts, strict=True):
+                fc = self.qhull_entries[f].composition.fractional_composition
+                for el, v in fc.items():
+                    recon[el] = recon.get(el, 0.0) + amt * v
+            target = comp.fractional_composition
+            all_els = set(recon) | set(target.elements)
+            max_diff = max(
+                (abs(recon.get(el, 0.0) - target.get(el, 0.0)) for el in all_els),
+                default=0.0,
+            )
+            _sc.check_decomposition_mass_conservation(max_diff, self.dim)
+        return result
 
     def get_decomp_and_hull_energy_per_atom(self, comp: Composition) -> tuple[dict[Entry, float], float]:
         """
@@ -848,6 +866,9 @@ class PhaseDiagram(MSONable):
                 warnings.warn(f"Unable to get decomposition for {entry}, encountered {exc}", stacklevel=2)
             return None, None
         e_above_hull = entry.energy_per_atom - hull_energy
+
+        if _sc.enabled() and entry in self.qhull_entries:
+            _sc.check_convex_hull_energy_non_negativity(e_above_hull, PhaseDiagram.numerical_tol)
 
         if allow_negative or e_above_hull >= -PhaseDiagram.numerical_tol:
             return decomp, e_above_hull

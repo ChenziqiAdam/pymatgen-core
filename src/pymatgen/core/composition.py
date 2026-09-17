@@ -24,6 +24,7 @@ from monty.serialization import loadfn
 from pymatgen.core.periodic_table import _PT_UNIT, DummySpecies, Element, ElementType, Species, get_el_sp
 from pymatgen.core.units import Mass
 from pymatgen.util.string import Stringify, formula_double_format
+from pymatgen import _scientific_checkers as _sc
 
 if TYPE_CHECKING:
     from collections.abc import Generator, ItemsView, Iterator, Mapping
@@ -313,7 +314,20 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
         new_el_map.update(self)
         for key, val in other.items():
             new_el_map[get_el_sp(key)] += val
-        return type(self)(new_el_map, allow_negative=self.allow_negative)
+        result = type(self)(new_el_map, allow_negative=self.allow_negative)
+        if _sc.enabled() and isinstance(other, type(self)) and other.allow_negative == self.allow_negative:
+            d1, d2 = self.get_el_amt_dict(), other.get_el_amt_dict()
+            pooled: dict[str, float] = defaultdict(float)
+            for k, v in d1.items():
+                pooled[k] += v
+            for k, v in d2.items():
+                pooled[k] += v
+            add_dict = result.get_el_amt_dict()
+            all_keys = set(pooled) | set(add_dict)
+            max_diff = max((abs(pooled.get(k, 0.0) - add_dict.get(k, 0.0)) for k in all_keys), default=0.0)
+            max_amount = max([abs(v) for v in list(pooled.values()) + list(add_dict.values())] or [1.0])
+            _sc.check_composition_addition_symbol_pooling(max_diff, max_amount)
+        return result
 
     def __sub__(self, other: object) -> Self:
         """Subtracts two compositions. For example, an Fe2O3 composition - an FeO
@@ -538,7 +552,27 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
         """A normalized formula, i.e., "LiFePO4" instead of
         "Li4Fe4P4O16".
         """
-        return self.get_reduced_formula_and_factor()[0]
+        formula = self.get_reduced_formula_and_factor()[0]
+        if _sc.enabled() and not getattr(self, "_scibench_recall", False):
+            # Require amounts comfortably (100x) inside amount_tolerance of
+            # an integer, not merely inside it: a composition intentionally
+            # built near the tolerance boundary (e.g.
+            # {"Na": 2-amount_tolerance/2, "Cl": 2}, exercised by
+            # tests/core/test_composition.py's rounding test) reduces fine
+            # at k=1 but a scaled copy's amplified absolute deviation can
+            # cross reduce_formula's own internal rounding threshold, so the
+            # scale-invariance law genuinely does not hold in that sliver.
+            # See sanitizers.json.
+            all_int = all(
+                abs(v - round(v)) < type(self).amount_tolerance / 100 for v in self.values()
+            )
+            if all_int:
+                for k in (2, 3, 5):
+                    scaled = self * k
+                    scaled._scibench_recall = True  # type: ignore[attr-defined]
+                    scaled_formula = scaled.get_reduced_formula_and_factor()[0]
+                    _sc.check_formula_reduction_scale_invariance(formula, scaled_formula, k)
+        return formula
 
     @cached_property
     def hill_formula(self) -> str:
@@ -604,7 +638,15 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
         Returns:
             Atomic fraction for element el in Composition
         """
-        return abs(self[el]) / self._n_atoms
+        frac = abs(self[el]) / self._n_atoms
+        if _sc.enabled() and not getattr(self, "_scibench_recall", False):
+            self._scibench_recall = True  # type: ignore[attr-defined]
+            try:
+                total = sum(abs(self[e]) / self._n_atoms for e in self.elements)
+                _sc.check_atomic_fraction_partition(total, len(self.elements))
+            finally:
+                self._scibench_recall = False  # type: ignore[attr-defined]
+        return frac
 
     def get_wt_fraction(self, el: SpeciesLike) -> float:
         """Calculate weight fraction of an Element or Species.
@@ -796,7 +838,19 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
 
     def as_weight_dict(self) -> dict[str, float]:
         """Get a dict of element symbols mapped to weight fractions, e.g. {"Ti": 0.90, "V": 0.06, "Al": 0.04}."""
-        return {str(el): self.get_wt_fraction(el) for el in self.elements}
+        wd = {str(el): self.get_wt_fraction(el) for el in self.elements}
+        if _sc.enabled() and not any(isinstance(el, Species) for el in self.elements):
+            try:
+                back = Composition.from_weight_dict(wd)
+                fc1, fc2 = self.fractional_composition, back.fractional_composition
+                max_diff = max(
+                    (abs(fc1.get(el, 0.0) - fc2.get(el, 0.0)) for el in set(fc1.elements) | set(fc2.elements)),
+                    default=0.0,
+                )
+                _sc.check_weight_atomic_fraction_roundtrip(max_diff, len(self.elements))
+            except Exception:
+                pass
+        return wd
 
     @property
     @deprecated(as_weight_dict, deadline=(2026, 4, 4))

@@ -26,6 +26,7 @@ from monty.json import MSONable
 from pymatgen.core.units import SUPPORTED_UNIT_NAMES, FloatWithUnit, Ha_to_eV, Length, Mass, Unit
 from pymatgen.io.core import ParseError
 from pymatgen.util.string import Stringify, formula_double_format
+from pymatgen import _scientific_checkers as _sc
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -478,7 +479,10 @@ class ElementBase(Enum):
     @cached_property
     def n_electrons(self) -> int:
         """Total number of electrons in the Element."""
-        return sum(t[-1] for t in self.full_electronic_structure)
+        result = sum(t[-1] for t in self.full_electronic_structure)
+        if _sc.enabled():
+            _sc.check_neutral_atom_electron_count(result, self.Z, self.symbol)
+        return result
 
     @property
     def valence(self) -> tuple[int | float, int]:
@@ -548,6 +552,20 @@ class ElementBase(Enum):
                         comb_counter[ML, MS] -= 1  # type:ignore[index]
                         if comb_counter[ML, MS] == 0:  # type:ignore[index]
                             del comb_counter[ML, MS]
+        if _sc.enabled():
+            for group in term_symbols:
+                for sym in group:
+                    m = re.match(r"(\d+)([A-Z])([\d.]+)", sym)
+                    if not m:
+                        continue
+                    mult = int(m.group(1))
+                    S_val = (mult - 1) / 2
+                    l_map = {c: i for i, c in enumerate("SPDFGHIKLMNOQRTUVWXYZ")}
+                    L_val = l_map.get(m.group(2))
+                    if L_val is None:
+                        continue
+                    J_val = float(m.group(3))
+                    _sc.check_term_symbol_triangle_inequality(sym, L_val, S_val, J_val)
         return term_symbols
 
     @cached_property

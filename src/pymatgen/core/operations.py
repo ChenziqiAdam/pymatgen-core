@@ -17,6 +17,7 @@ from monty.json import MSONable
 # would pull electronic_structure.core into every `import pymatgen.core`.
 from pymatgen.util.due import Doi, due
 from pymatgen.util.string import transformation_to_string
+from pymatgen import _scientific_checkers as _sc
 
 if TYPE_CHECKING:
     from pymatgen.electronic_structure.core import Magmom
@@ -131,7 +132,19 @@ class SymmOp(MSONable):
             Coordinates of point after operation.
         """
         affine_point = np.append(point, 1.0)
-        return np.dot(self.affine_matrix, affine_point)[:3]
+        result = np.dot(self.affine_matrix, affine_point)[:3]
+        if _sc.enabled() and not getattr(self, "_scibench_recall", False):
+            rot = self.affine_matrix[:3, :3]
+            if abs(np.linalg.det(rot)) > 1e-12:
+                self._scibench_recall = True  # type: ignore[attr-defined]
+                try:
+                    back = self.inverse.operate(result)
+                    cond = np.linalg.cond(self.affine_matrix)
+                    point_norm = float(np.linalg.norm(np.asarray(point, dtype=float)))
+                    _sc.check_symmop_inverse_roundtrip(point, back, cond, point_norm)
+                finally:
+                    self._scibench_recall = False  # type: ignore[attr-defined]
+        return result
 
     def operate_multi(self, points: ArrayLike) -> NDArray[np.float64]:
         """Apply the operation on a list of points.
@@ -144,7 +157,16 @@ class SymmOp(MSONable):
         """
         points = np.asarray(points)
         affine_points = np.concatenate([points, np.ones((*points.shape[:-1], 1))], axis=-1)
-        return np.inner(affine_points, self.affine_matrix)[..., :-1]
+        result = np.inner(affine_points, self.affine_matrix)[..., :-1]
+        if _sc.enabled() and not getattr(self, "_scibench_recall", False):
+            self._scibench_recall = True  # type: ignore[attr-defined]
+            try:
+                single_stack = np.array([self.operate(p) for p in points.reshape(-1, points.shape[-1])])
+                single_stack = single_stack.reshape(result.shape)
+                _sc.check_operate_single_vs_batch_consistency(result, single_stack)
+            finally:
+                self._scibench_recall = False  # type: ignore[attr-defined]
+        return result
 
     def apply_rotation_only(self, vector: NDArray) -> NDArray:
         """Vectors should only be operated by the rotation matrix and not the
@@ -300,6 +322,9 @@ class SymmOp(MSONable):
         rot_mat[2, 0] = unit_vec[0] * unit_vec[2] * (1 - cos_a) - unit_vec[1] * sin_a
         rot_mat[2, 1] = unit_vec[1] * unit_vec[2] * (1 - cos_a) + unit_vec[0] * sin_a
         rot_mat[2, 2] = cos_a + unit_vec[2] ** 2 * (1 - cos_a)
+
+        if _sc.enabled():
+            _sc.check_rotation_matrix_orthogonality(rot_mat)
 
         return SymmOp.from_rotation_and_translation(rot_mat, vec)
 

@@ -19,6 +19,7 @@ from monty.json import MSONable
 
 from pymatgen.util.coord import pbc_shortest_vectors
 from pymatgen.util.due import Doi, due
+from pymatgen import _scientific_checkers as _sc
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -205,7 +206,12 @@ class Lattice(MSONable):
     @property
     def metric_tensor(self) -> NDArray[np.float64]:
         """The metric tensor of the lattice."""
-        return np.dot(self._matrix, self._matrix.T)
+        g = np.dot(self._matrix, self._matrix.T)
+        if _sc.enabled():
+            reconstructed = type(self).from_parameters(*self.parameters)
+            g2 = np.dot(reconstructed._matrix, reconstructed._matrix.T)
+            _sc.check_metric_tensor_parameter_roundtrip(g, g2, max(self.lengths))
+        return g
 
     def copy(self) -> Self:
         """Make a copy of this lattice."""
@@ -264,9 +270,17 @@ class Lattice(MSONable):
         Returns:
             float: distance between hkl plane and origin
         """
-        g_star = self.reciprocal_lattice_crystallographic.metric_tensor
+        recip_cryst = self.reciprocal_lattice_crystallographic
+        g_star = recip_cryst.metric_tensor
         hkl = np.array(miller_index)
-        return 1 / ((np.dot(np.dot(hkl, g_star), hkl.T)) ** (1 / 2))
+        d_metric = 1 / ((np.dot(np.dot(hkl, g_star), hkl.T)) ** (1 / 2))
+        if _sc.enabled() and np.any(hkl != 0):
+            gvec = hkl @ recip_cryst.matrix
+            d_vector = 1.0 / np.linalg.norm(gvec)
+            _sc.check_d_hkl_formula_consistency(
+                d_metric, d_vector, np.abs(hkl).max()
+            )
+        return d_metric
 
     @classmethod
     def cubic(cls, a: float, pbc: tuple[bool, bool, bool] = (True, True, True)) -> Self:
@@ -533,7 +547,14 @@ class Lattice(MSONable):
         The property is lazily generated for efficiency.
         """
         inv_mat = np.linalg.inv(self._matrix).T
-        return type(self)(inv_mat * 2 * np.pi)
+        result = type(self)(inv_mat * 2 * np.pi)
+        if _sc.enabled():
+            rr = np.linalg.inv(result.matrix).T
+            rr_matrix = rr * 2 * np.pi
+            _sc.check_reciprocal_lattice_involution(
+                self._matrix, rr_matrix, np.linalg.cond(self._matrix)
+            )
+        return result
 
     @property
     def reciprocal_lattice_crystallographic(self) -> Self:
@@ -1053,7 +1074,10 @@ class Lattice(MSONable):
         """
         if delta not in self._lll_matrix_mappings:
             self._lll_matrix_mappings[delta] = self._calculate_lll()
-        return type(self)(self._lll_matrix_mappings[delta][0])
+        result = type(self)(self._lll_matrix_mappings[delta][0])
+        if _sc.enabled():
+            _sc.check_lll_volume_invariance(self.volume, result.volume)
+        return result
 
     def _calculate_lll(self, delta: float = 0.75) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         """Perform a Lenstra-Lenstra-Lovasz lattice basis reduction to obtain a
@@ -1138,7 +1162,13 @@ class Lattice(MSONable):
         """Given fractional coordinates in the lattice basis, returns corresponding
         fractional coordinates in the lll basis.
         """
-        return np.dot(frac_coords, self.lll_inverse)
+        result = np.dot(frac_coords, self.lll_inverse)
+        if _sc.enabled():
+            roundtrip = np.dot(result, self.lll_mapping)
+            _sc.check_lll_frac_coord_roundtrip(
+                frac_coords, roundtrip, np.linalg.cond(self.lll_mapping)
+            )
+        return result
 
     def get_frac_coords_from_lll(self, lll_frac_coords: ArrayLike) -> NDArray[np.float64]:
         """Given fractional coordinates in the lll basis, returns corresponding
@@ -1700,7 +1730,16 @@ class Lattice(MSONable):
             v, d2 = pbc_shortest_vectors(self, frac_coords1, frac_coords2, return_d2=True)
             fc = self.get_fractional_coords(v[0][0]) + frac_coords1 - frac_coords2  # type: ignore[operator]
             fc = np.array(np.round(fc), dtype=np.int64)
-            return np.sqrt(d2[0, 0]), fc
+            dist = np.sqrt(d2[0, 0])
+            if _sc.enabled():
+                cart = self.get_cartesian_coords(
+                    np.asarray(fc) + np.asarray(frac_coords2) - np.asarray(frac_coords1)
+                )
+                dist_recomputed = np.linalg.norm(cart)
+                _sc.check_pbc_distance_image_consistency(
+                    dist, dist_recomputed, max(self.lengths)
+                )
+            return dist, fc
 
         jimage = np.array(jimage)
         mapped_vec = self.get_cartesian_coords(jimage + frac_coords2 - frac_coords1)  # type: ignore[operator]

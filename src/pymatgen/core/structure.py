@@ -57,6 +57,7 @@ from pymatgen.core.units import Length, Mass
 # + symmetry.groups (~6-10 ms) on every `from pymatgen.core import Structure`.
 from pymatgen.util.coord import all_distances, get_angle, lattice_points_in_supercell
 from pymatgen.util.due import Doi, due
+from pymatgen import _scientific_checkers as _sc
 
 try:
     from typing import override  # Python 3.12+
@@ -1566,7 +1567,12 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
     def density(self) -> float:
         """The density in units of g/cm^3."""
         mass = Mass(self.composition.weight, _PT_UNIT["Atomic mass"])
-        return mass.to("g") / (self.volume * Length(1, "ang").to("cm") ** 3)
+        result = mass.to("g") / (self.volume * Length(1, "ang").to("cm") ** 3)
+        if _sc.enabled():
+            mass_g = float(Mass(self.composition.weight, _PT_UNIT["Atomic mass"]).to("g"))
+            volume_cm3 = float(self.volume) * float(Length(1, "ang").to("cm")) ** 3
+            _sc.check_density_mass_volume_consistency(float(result), mass_g, volume_cm3)
+        return result
 
     @property
     def pbc(self) -> tuple[bool, bool, bool]:
@@ -4595,6 +4601,8 @@ class Structure(IStructure, MutableSequence[PeriodicSite]):
             Structure: self if in_place is True else self.copy() after making supercell
         """
         # TODO (janosh) maybe default in_place to False after a depreciation period
+        n_before = len(self)
+        vol_before = self.volume
         struct: Self = self if in_place else self.copy()
         supercell = struct * scaling_matrix
         if to_unit_cell:
@@ -4602,6 +4610,21 @@ class Structure(IStructure, MutableSequence[PeriodicSite]):
                 site.to_unit_cell(in_place=True)
         struct.sites = supercell.sites
         struct.lattice = supercell.lattice
+
+        if _sc.enabled():
+            # np.array(scaling_matrix, int) truncates (not rounds) floats --
+            # struct * scaling_matrix (structure.py __mul__) does the same,
+            # so the determinant used here must be computed on the SAME
+            # truncated integer matrix the library actually applied, not the
+            # raw input, or a non-integer input (e.g. [2.5, 1, 1], exercised
+            # by tests/core/test_structure.py::test_make_supercell) produces
+            # a spurious PM-STR-001/002 mismatch. See sanitizers.json.
+            int_mat = np.array(scaling_matrix, int)
+            if int_mat.shape != (3, 3):
+                int_mat = int_mat * np.eye(3, dtype=int)
+            det_m = float(np.linalg.det(int_mat))
+            _sc.check_supercell_site_count_conservation(n_before, len(struct), det_m)
+            _sc.check_supercell_volume_determinant_scaling(vol_before, struct.volume, det_m)
 
         return struct
 
