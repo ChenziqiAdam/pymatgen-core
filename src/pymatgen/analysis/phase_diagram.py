@@ -769,7 +769,7 @@ class PhaseDiagram(MSONable):
         }
         if _sc.enabled():
             _sc.check_decomposition_convex_combination(
-                sum(decomp_amts), min(decomp_amts), self.dim
+                sum(decomp_amts), min(decomp_amts), self.dim, PhaseDiagram.numerical_tol
             )
             recon: dict = {}
             for f, amt in zip(facet, decomp_amts, strict=True):

@@ -104,13 +104,24 @@ def _guard(func):
 def check_reciprocal_lattice_involution(orig_matrix, roundtrip_matrix, cond):
     """PM-LAT-001: reciprocal(reciprocal(L)) == L.
 
-    12-lattice sweep (cubic/tetragonal/orthorhombic/hexagonal/monoclinic/
-    triclinic/skewed/rhombohedral, volumes 0.125-7997): worst observed
-    diff/(eps64*cond) ratio was 15.6 (near-cubic case, matrix entries near
-    zero amplify the relative ratio). Tolerance set to 100x for headroom.
+    FIX (2026-09-17, round-1 triggerability): the original tolerance
+    (100*eps64*cond, no magnitude term) missed that np.linalg.inv's
+    absolute rounding error for a matrix with entries of magnitude `a`
+    scales as O(eps64*a) in the worst element -- independent of
+    conditioning for a well-conditioned matrix. cond() stays exactly 1.0
+    for any cubic lattice regardless of scale, so a cond-only tolerance
+    never budgeted for large, well-conditioned lattices (Lattice.cubic(500)
+    and above: diff/(eps64*a) held at a stable 0.512 across a=500..2000,
+    while cond stayed 1.0 throughout). A re-derivation sweep spanning 6
+    lattice families x 9 length scales (0.5 to 10000) jointly, scoring
+    diff/(eps64*cond*magnitude), gave worst observed ratio 0.76. Tolerance
+    set to 100x*eps64*cond*max(1,|matrix|_inf). Re-verified: the original
+    triggering case (Lattice.cubic(500) and above) is now silent, and
+    isolated-sensitivity with a synthetic mismatch still fires.
     """
     diff = np.abs(np.asarray(orig_matrix) - np.asarray(roundtrip_matrix)).max()
-    tol = 100.0 * eps64 * max(cond, 1.0)
+    magnitude = max(1.0, np.abs(np.asarray(orig_matrix)).max())
+    tol = 100.0 * eps64 * max(cond, 1.0) * magnitude
     trigger_if(diff > tol, "PM-LAT-001", diff=diff, tol=tol)
 
 
@@ -153,13 +164,42 @@ def check_lll_frac_coord_roundtrip(f_orig, f_roundtrip, cond):
     trigger_if(diff > tol, "PM-LAT-004", diff=diff, tol=tol)
 
 
+_LAT_COND_CEILING = 1.0e4  # shared with PM-STR-004; see FIX notes below
+
+
 @_guard
-def check_d_hkl_formula_consistency(d_metric, d_vector, max_hkl):
+def check_d_hkl_formula_consistency(d_metric, d_vector, max_hkl, cond):
     """PM-LAT-005: d_hkl's metric-tensor formula matches the vector-norm formula.
 
-    Same 12-lattice sweep x 6 Miller indices: worst observed
-    diff/(eps64*max_hkl*d) ratio was 1.06. Tolerance set to 100x.
+    FIX (2026-09-17, round-1 triggerability): the invariant is true in exact
+    arithmetic, but the metric-tensor quadratic form (hkl @ G* @ hkl.T)
+    suffers catastrophic cancellation for a near-rank-deficient lattice --
+    confirmed against a Decimal high-precision recomputation on the
+    triggering synthetic lattice (two nearly-parallel long vectors,
+    cond(matrix) ~ 2e7): the vector-norm path matched to 16 digits, the
+    metric-tensor path had lost ~1% of relative accuracy to cancellation.
+    cond(matrix) itself does not correlate with the severity (it stayed
+    flat at ~2e7 while the observed error grew ~10 orders of magnitude as
+    the near-parallel skew shrank), so it cannot be used as a *tolerance*
+    scaling variable here -- but a cond(matrix) >= 1e4 ceiling on the
+    PRECONDITION is well justified: a sweep of realistic crystallographic
+    stress cases (elongated tetragonal cells up to c/a=100, monoclinic
+    cells at acute/obtuse angles from 10 to 170 degrees, anisotropic
+    orthorhombic cells up to 50:1) found a worst cond(matrix) of ~100,
+    five orders of magnitude below the adversarial synthetic lattice's
+    ~2e7 -- no Niggli/LLL-reduced or otherwise crystallographically
+    meaningful lattice approaches this regime. Re-derived the existing
+    tolerance formula restricted to cond(matrix) < 1e4 (12 lattice families
+    x 8 length/angle variants x 6 Miller indices, 288 trials): worst
+    observed diff/(eps64*max_hkl*d) ratio was 1.84, comfortably inside the
+    existing 100x headroom -- only the precondition needed narrowing, not
+    the tolerance multiplier itself. Re-verified: the original triggering
+    near-rank-deficient synthetic lattice is now excluded by the
+    precondition (silent), and isolated-sensitivity with a synthetic
+    mismatch on an ordinary (cond < 1e4) lattice still fires.
     """
+    if cond >= _LAT_COND_CEILING:
+        return
     diff = abs(d_metric - d_vector)
     tol = 100.0 * eps64 * max(max_hkl, 1) * abs(d_metric)
     trigger_if(diff > tol, "PM-LAT-005", diff=diff, tol=tol)
@@ -195,14 +235,37 @@ def check_atomic_fraction_partition(fraction_sum, n_elements):
 
 
 @_guard
-def check_weight_atomic_fraction_roundtrip(diff, n_elements):
+def check_weight_atomic_fraction_roundtrip(diff, n_elements, min_fraction, amount_tolerance):
     """PM-COMP-003: from_weight_dict(as_weight_dict()).fractional_composition round-trips.
 
     9-composition sweep (Element-keyed only -- as_weight_dict/
     from_weight_dict do not support Species-keyed compositions, confirmed
     via ValueError on a Fe2+/Fe3+ composition during derivation): worst
     observed diff/eps64 ratio was 0.5. Tolerance set to 100x*eps64.
+
+    FIX (2026-09-17, round-1 triggerability): the invariant implicitly
+    assumed every present element survives the weight/atomic-fraction
+    round-trip exactly, but Composition's own constructor documents and
+    enforces an ``amount_tolerance`` (1e-8) filter that silently drops any
+    element whose mole fraction falls below it -- confirmed via a
+  Fe:H amount-ratio sweep: the round-trip diff was exactly 0.0 until the
+    ratio crossed 1e8 (the point where H's derived mole fraction, 1/ratio,
+    crosses below amount_tolerance=1e-8), then jumped discontinuously; a
+    hard filter-threshold effect, not gradual precision loss, and not a
+    defect in as_weight_dict/from_weight_dict's arithmetic. Fix narrows the
+    PRECONDITION (SANITIZER.md 5.8 P) rather than the tolerance: skip the
+    check when any present element's mole fraction is within 100x of
+    Composition.amount_tolerance (read dynamically, not hardcoded), since
+    the round-trip cannot be expected to preserve a component the library's
+    own constructor will filter out either on the way in or the way back.
+    Re-verified: the original triggering composition
+    (Composition({"Fe": 1e8, "H": 1.0})) is now excluded by the
+    precondition (silent), and isolated-sensitivity with a synthetic
+    mismatch on an ordinary (no near-threshold trace element) composition
+    still fires.
     """
+    if min_fraction < 100.0 * amount_tolerance:
+        return
     tol = 100.0 * eps64 * max(n_elements, 1)
     trigger_if(diff > tol, "PM-COMP-003", diff=diff, tol=tol)
 
@@ -255,11 +318,25 @@ def check_rotation_matrix_orthogonality(rotation_matrix):
 def check_operate_single_vs_batch_consistency(multi_result, single_stack):
     """PM-OP-003: operate_multi(points)[i] == operate(points[i]) for every i.
 
-    Same 50-trial sweep x 10-point batches: worst observed diff/eps64
-    ratio was 8.0. Tolerance set to 100x*eps64.
+    FIX (2026-09-17, round-1 triggerability): the original tolerance
+    (100*eps64, no magnitude term) missed that np.inner's batch kernel and
+    np.dot's per-point kernel are different BLAS-level code paths that
+    accumulate the same dot product in a different order -- ordinary
+    floating-point non-associativity whose absolute error floor scales with
+    the OUTPUT magnitude, not a magnitude-independent constant. Confirmed by
+    isolating batch size alone (same point repeated): diff is exactly 0.0 at
+    batch size 1, jumps to a stable nonzero value at batch size >= 2,
+    regardless of point magnitude. A re-derivation sweep spanning point
+    magnitude 1e-6..1e6 AND batch size 1..200 jointly (10800 trials) gave
+    worst observed diff/(eps64*max(1,|result|)) ratio 1.84. Tolerance set to
+    100x*eps64*max(1, |result|_inf) for headroom. Re-verified: the original
+    triggering case (axis=[1,1,1], angle=180.001 deg,
+    translation=[1e-9,1e-9,1e-9], magnitude ~1e4, batch size 10) is now
+    silent, and isolated-sensitivity with a synthetic mismatch still fires.
     """
     diff = np.abs(np.asarray(multi_result) - np.asarray(single_stack)).max()
-    tol = 100.0 * eps64
+    magnitude = max(1.0, np.abs(np.asarray(multi_result)).max())
+    tol = 100.0 * eps64 * magnitude
     trigger_if(diff > tol, "PM-OP-003", diff=diff, tol=tol)
 
 
@@ -342,7 +419,7 @@ def check_density_mass_volume_consistency(density, mass_g, volume_cm3):
 
 
 @_guard
-def check_pbc_distance_image_consistency(dist, dist_recomputed, max_lattice_length):
+def check_pbc_distance_image_consistency(dist, dist_recomputed, max_lattice_length, cond):
     """PM-STR-004: get_distance_and_image's returned dist matches the
     Cartesian distance recomputed from its own returned jimage.
 
@@ -356,9 +433,29 @@ def check_pbc_distance_image_consistency(dist, dist_recomputed, max_lattice_leng
     1e-3) confirmed: worst diff/(eps64*max_lattice_length) ratio was 1.16;
     worst diff/(eps64*dist) ratio for tiny dist was unbounded (blew up as
     dist -> 0 with fixed absolute error). Re-derived against the lattice
-    length scale: 100x headroom on the 1.16 worst ratio. See
-    sanitizers.json.
+    length scale: 100x headroom on the 1.16 worst ratio.
+
+    FIX 2 (2026-09-17, round-1 triggerability, second independent failure
+    mode on the same checker): on a near-rank-deficient lattice (two
+    long, nearly-parallel vectors; cond(matrix) ~ 2e7), the nearest-image
+    search must use huge, nearly-canceling integer jimage entries (tens of
+    thousands) to express an O(1) fractional displacement on the
+    near-degenerate basis -- confirmed via a skew-parameter sweep holding
+    the geometry fixed: cond(matrix) and max_lattice_length both stayed
+    ~flat while the observed error grew ~4 orders of magnitude as the
+    lattice approached degeneracy, proving neither existing scaling
+    variable tracks this mode. Shares its root cause and fix with
+    PM-LAT-005 (see that checker's FIX note for the derivation): a
+    cond(matrix) >= 1e4 precondition ceiling excludes this regime, backed
+    by the same realistic-stress-case sweep (worst realistic cond ~100,
+    five orders of magnitude below the adversarial synthetic lattice's
+    ~2e7). Re-verified: the original triggering near-rank-deficient
+    lattice is now excluded by the precondition (silent), and
+    isolated-sensitivity with a synthetic mismatch on an ordinary
+    (cond < 1e4) lattice still fires.
     """
+    if cond >= _LAT_COND_CEILING:
+        return
     diff = abs(dist - dist_recomputed)
     tol = 100.0 * eps64 * max(max_lattice_length, 1e-10)
     trigger_if(diff > tol, "PM-STR-004", diff=diff, tol=tol)
@@ -384,18 +481,40 @@ def check_convex_hull_energy_non_negativity(e_above_hull, numerical_tol):
 
 
 @_guard
-def check_decomposition_convex_combination(amount_sum, min_amount, dim):
+def check_decomposition_convex_combination(amount_sum, min_amount, dim, numerical_tol):
     """PM-PD-002: decomposition amounts sum to 1 and are all non-negative.
 
     6-composition sweep on the Fe-O phase diagram: worst |sum-1| observed
-    was 0, worst negative amount was 0. Tolerance set to
-    100x*eps64*(dim+1) for headroom (dim+1 facet vertices summed).
+    was 0, worst negative amount was 0. Sum-to-one half kept at
+    100x*eps64*(dim+1) for headroom (dim+1 facet vertices summed) -- that
+    half never fired and a fresh sweep (below) confirms it remains sound.
+
+    FIX (2026-09-17, round-1 triggerability, non-negative half only): the
+    firing traced to scipy.spatial's own Qhull-based bary_coords linear
+    solve, not pymatgen arithmetic -- confirmed with a minimal
+    pymatgen-independent 2-D Delaunay reproduction showing the same
+    near-vertex sub-zero noise is inherent to solving for barycentric
+    coordinates via linear algebra in general. eps64*(dim+1) is the wrong
+    scaling variable: it is a double-precision-relative bound (~1e-15
+    scale), but the actual noise floor from a near-degenerate facet-matrix
+    solve is many orders of magnitude coarser. A 13500-trial sweep (5
+    element systems from binary to quaternary, vertex-to-vertex mixes at
+    proximities 1e-3..1e-15 and exactly 0) found every observed negative
+    excursion bounded by |min_amount|/PhaseDiagram.numerical_tol <= 0.1 --
+    a stable ratio against the class's own existing absolute numerical
+    floor (1e-8, already used by PM-PD-001 and by the class's own
+    downstream amount-filtering), not against eps64*(dim+1). Tolerance
+    (non-negative half only) set to 10x*numerical_tol for 100x headroom on
+    the observed 0.1 worst ratio. Re-verified: the original triggering
+    quaternary Li-Fe-P-O near-vertex composition is now silent, and
+    isolated-sensitivity with a synthetic mismatch still fires.
     """
-    tol = 100.0 * eps64 * (dim + 1)
-    trigger_if(abs(amount_sum - 1.0) > tol, "PM-PD-002",
-               family="sum_to_one", amount_sum=amount_sum, tol=tol)
-    trigger_if(min_amount < -tol, "PM-PD-002",
-               family="non_negative", min_amount=min_amount, tol=tol)
+    sum_tol = 100.0 * eps64 * (dim + 1)
+    neg_tol = 10.0 * abs(numerical_tol)
+    trigger_if(abs(amount_sum - 1.0) > sum_tol, "PM-PD-002",
+               family="sum_to_one", amount_sum=amount_sum, tol=sum_tol)
+    trigger_if(min_amount < -neg_tol, "PM-PD-002",
+               family="non_negative", min_amount=min_amount, tol=neg_tol)
 
 
 @_guard

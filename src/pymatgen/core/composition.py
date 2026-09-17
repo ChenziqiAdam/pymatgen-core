@@ -847,7 +847,17 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
                     (abs(fc1.get(el, 0.0) - fc2.get(el, 0.0)) for el in set(fc1.elements) | set(fc2.elements)),
                     default=0.0,
                 )
-                _sc.check_weight_atomic_fraction_roundtrip(max_diff, len(self.elements))
+                # Use RAW (pre-amount_tolerance-filter) mole fractions here,
+                # not fc1 (fractional_composition, which has already dropped
+                # any trace element below the filter) -- the precondition
+                # needs to see the trace element to exclude it.
+                raw_total = sum(amt for _, amt in self.items())
+                min_fraction = (
+                    min(amt / raw_total for _, amt in self.items()) if raw_total else 1.0
+                )
+                _sc.check_weight_atomic_fraction_roundtrip(
+                    max_diff, len(self.elements), min_fraction, Composition.amount_tolerance
+                )
             except Exception:
                 pass
         return wd

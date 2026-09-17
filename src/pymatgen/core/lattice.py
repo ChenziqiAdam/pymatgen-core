@@ -278,7 +278,7 @@ class Lattice(MSONable):
             gvec = hkl @ recip_cryst.matrix
             d_vector = 1.0 / np.linalg.norm(gvec)
             _sc.check_d_hkl_formula_consistency(
-                d_metric, d_vector, np.abs(hkl).max()
+                d_metric, d_vector, np.abs(hkl).max(), np.linalg.cond(self._matrix)
             )
         return d_metric
 
@@ -1737,7 +1737,7 @@ class Lattice(MSONable):
                 )
                 dist_recomputed = np.linalg.norm(cart)
                 _sc.check_pbc_distance_image_consistency(
-                    dist, dist_recomputed, max(self.lengths)
+                    dist, dist_recomputed, max(self.lengths), np.linalg.cond(self._matrix)
                 )
             return dist, fc
 
