@@ -562,9 +562,24 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
             # at k=1 but a scaled copy's amplified absolute deviation can
             # cross reduce_formula's own internal rounding threshold, so the
             # scale-invariance law genuinely does not hold in that sliver.
-            # See sanitizers.json.
+            #
+            # FIX (2026-09-18, round-2 triggerability): also require every
+            # amount to be comfortably (100x) below float64's exact-integer
+            # ceiling, 2**53. Above that ceiling "close to an integer" is
+            # not a meaningful test -- every float is trivially near *some*
+            # representable integer, but that integer may not be the one
+            # the composition's true amount was meant to encode, and a
+            # scaled copy's GCD-reduction is then operating on numbers that
+            # no longer encode the intended ratio at all. Confirmed on
+            # `Composition({"Fe": 123456789, "O": 987654321}) * 1e9`:
+            # amounts land at ~1.23e17 / ~9.88e17, respectively ~14x and
+            # ~110x past 2**53 (~9.007e15), and reduced_formula on the
+            # scaled copy produced a formula bearing no numeric relation to
+            # the unscaled reduction. See sanitizers.json.
             all_int = all(
-                abs(v - round(v)) < type(self).amount_tolerance / 100 for v in self.values()
+                abs(v - round(v)) < type(self).amount_tolerance / 100
+                and abs(v) < 2**53 / 100
+                for v in self.values()
             )
             if all_int:
                 for k in (2, 3, 5):

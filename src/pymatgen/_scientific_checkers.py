@@ -153,14 +153,27 @@ def check_lll_volume_invariance(vol_before, vol_after):
 def check_lll_frac_coord_roundtrip(f_orig, f_roundtrip, cond):
     """PM-LAT-004: get_frac_coords_from_lll(get_lll_frac_coords(f)) == f.
 
-    Same 12-lattice sweep (5 random fractional coords per lattice, range
-    [-2, 2]): worst observed diff/(eps64*cond) ratio was 0 (this transform
-    pair is numerically exact to within a few ULP regardless of
-    conditioning in every trial run). Tolerance set generously to 100x
-    anyway since the theoretical bound scales with cond(lll_mapping).
+    FIX (2026-09-18, round-2 triggerability): the original tolerance
+    (100*eps64*cond(lll_mapping), no magnitude term) missed that the
+    round-trip's absolute rounding error scales with the magnitude of the
+    fractional coordinate being transformed, not just with the mapping's
+    conditioning -- the same missing-magnitude-scaling gap already found
+    and fixed in PM-LAT-001/PM-OP-003/PM-STR-004. Confirmed on the
+    triggering case (`Lattice.from_parameters(1,1,1,179.999,0.001,90)`,
+    `f=[-1e6,1e6,3.14159]`, cond(lll_mapping)=3.49e16): diff/(eps64*cond) =
+    10659 (fails), but diff/(eps64*cond*magnitude) = 0.0107 (comfortably
+    inside 100x headroom). Re-derivation swept fractional-coordinate
+    magnitude (1e-2 to 1e7) JOINTLY with lattice conditioning (6 cell-shape
+    families x 12 angle sets including deliberately near-degenerate skew
+    angles down to 0.001 degrees, cond(lll_mapping) up to ~1e19): worst
+    observed diff/(eps64*cond*magnitude) ratio was 1.25. Tolerance set to
+    100x*eps64*cond*max(1,magnitude). Re-verified: the original triggering
+    case is now silent, and isolated-sensitivity with a synthetic mismatch
+    still fires.
     """
     diff = np.abs(np.asarray(f_orig) - np.asarray(f_roundtrip)).max()
-    tol = 100.0 * eps64 * max(cond, 1.0)
+    magnitude = max(1.0, np.abs(np.asarray(f_orig)).max())
+    tol = 100.0 * eps64 * max(cond, 1.0) * magnitude
     trigger_if(diff > tol, "PM-LAT-004", diff=diff, tol=tol)
 
 
