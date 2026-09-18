@@ -32,6 +32,7 @@ from pymatgen.core.structure import Molecule, PeriodicSite, Structure
 from pymatgen.symmetry.structure import SymmetrizedStructure
 from pymatgen.util.coord import find_in_coord_list, pbc_diff
 from pymatgen.util.due import Doi, due
+from pymatgen import _scientific_checkers as _sc
 
 if TYPE_CHECKING:
     from typing import Any, Literal
@@ -352,7 +353,50 @@ class SpacegroupAnalyzer:
                 trans = np.dot(trans, self._structure.lattice.matrix)
             op = SymmOp.from_rotation_and_translation(rot, trans)
             sym_ops.append(op)
+        if _sc.enabled() and not cartesian:
+            self._check_symmop_atom_correspondence(sym_ops)
         return sym_ops
+
+    def _check_symmop_atom_correspondence(self, sym_ops) -> None:
+        """PM-SYM-001 re-call: verify every fractional-coordinate SymmOp
+        returned by get_symmetry_operations() actually maps every site onto
+        a site of the same species, modulo lattice translation (periodic
+        minimum-image match) -- the same physical-correspondence style of
+        check PointGroupAnalyzer.is_valid_op already performs for the
+        molecular (non-periodic) case, freshly implemented here with
+        periodic-boundary awareness since is_valid_op has none.
+        """
+        struct = self._structure
+        if len(struct) * len(sym_ops) > 5000:
+            # O(n_ops * n_sites^2) is too costly for large structures; a
+            # P-class problem-size gate, not a restriction of the law.
+            return
+        try:
+            max_residual = 0.0
+            for op in sym_ops:
+                for site in struct:
+                    new_frac = op.operate(site.frac_coords)
+                    best = None
+                    for other in struct:
+                        if other.species != site.species:
+                            continue
+                        delta = new_frac - other.frac_coords
+                        delta -= np.round(delta)
+                        resid = np.linalg.norm(struct.lattice.get_cartesian_coords(delta))
+                        if best is None or resid < best:
+                            best = resid
+                    if best is None:
+                        # No site of matching species at all: not this
+                        # checker's concern (an empty/degenerate structure),
+                        # skip rather than manufacture a spurious residual.
+                        continue
+                    if best > max_residual:
+                        max_residual = best
+            _sc.check_periodic_symmop_atom_correspondence(
+                max_residual, self._symprec, len(sym_ops), len(struct)
+            )
+        except Exception:
+            pass
 
     def get_point_group_operations(self, cartesian: bool = False) -> list[SymmOp]:
         """Return symmetry operations as a list of SymmOp objects. By default returns

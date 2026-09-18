@@ -17,6 +17,8 @@ from pymatgen.core import constants
 from pymatgen.core.structure import Structure
 from pymatgen.util.due import Doi, due
 
+from pymatgen import _scientific_checkers as _sc
+
 if TYPE_CHECKING:
     from typing import Any, Self
 
@@ -240,7 +242,28 @@ class EwaldSummation(MSONable):
         if not self._initialized:
             self._calc_ewald_terms()
             self._initialized = True
-        return self._recip.sum() + self._real.sum() + self._point.sum() + self._charged_cell_energy
+        energy = self._recip.sum() + self._real.sum() + self._point.sum() + self._charged_cell_energy
+        if _sc.enabled() and getattr(self, "_eta_input", None) is None:
+            # Re-call check: build a second EwaldSummation on the same
+            # structure with a different eta (its own auto-derived cutoffs)
+            # and compare total_energy. _eta_input marks the probe instance
+            # so it does not recursively spawn a third comparison.
+            try:
+                probe_eta = self._eta * 10.0 if self._eta < 1.0 else self._eta / 10.0
+                probe = EwaldSummation(
+                    self._struct,
+                    eta=probe_eta,
+                    acc_factor=self._acc_factor,
+                    compute_forces=False,
+                )
+                probe._eta_input = self._eta
+                probe_energy = probe.total_energy
+                _sc.check_ewald_eta_split_invariance(
+                    energy, probe_energy, self._eta, probe_eta, self._acc_factor, len(self._struct)
+                )
+            except Exception:
+                pass
+        return energy
 
     @property
     def total_energy_matrix(self):

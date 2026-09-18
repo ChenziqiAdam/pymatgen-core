@@ -22,6 +22,7 @@ from scipy.linalg import polar
 from pymatgen.core.lattice import Lattice
 from pymatgen.core.operations import SymmOp
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+from pymatgen import _scientific_checkers as _sc
 
 from .structure_matcher import StructureMatcher
 
@@ -131,7 +132,22 @@ class Tensor(np.ndarray, MSONable):
         if not matrix.is_rotation(tol):
             raise ValueError("Rotation matrix is not valid.")
         symm_op = SymmOp.from_rotation_and_translation(matrix, [0.0, 0.0, 0.0])
-        return self.transform(symm_op)
+        result = self.transform(symm_op)
+        if _sc.enabled() and self.rank == 2:
+            try:
+                arr0 = np.asarray(self)
+                arr1 = np.asarray(result)
+                trace0, trace1 = np.trace(arr0), np.trace(arr1)
+                eig0 = np.linalg.eigvalsh((arr0 + arr0.T) / 2)
+                eig1 = np.linalg.eigvalsh((arr1 + arr1.T) / 2)
+                R = np.asarray(matrix)
+                ortho_err = np.abs(R @ R.T - np.eye(3)).max()
+                _sc.check_tensor_rotation_trace_eigenvalue_invariance(
+                    trace0, trace1, eig0, eig1, ortho_err
+                )
+            except Exception:
+                pass
+        return result
 
     def einsum_sequence(
         self,

@@ -35,6 +35,7 @@ from pymatgen.core.structure_matcher import StructureMatcher
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 from pymatgen.util.coord import in_coord_list
 from pymatgen.util.due import Doi, due
+from pymatgen import _scientific_checkers as _sc
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -1224,6 +1225,9 @@ class SlabGenerator:
             struct.lattice.matrix.T,
         ).T
 
+        if _sc.enabled() and not self.primitive:
+            self._check_surface_normal_and_layer_count(struct, ouc, n_layers_slab)
+
         return Slab(
             struct.lattice,
             struct.species_and_occu,
@@ -1236,6 +1240,49 @@ class SlabGenerator:
             site_properties=struct.site_properties,
             energy=energy,
         )
+
+    def _check_surface_normal_and_layer_count(self, struct, ouc, n_layers_slab) -> None:
+        """Re-call checks for PM-SURF-001 and PM-SURF-002, run at the end of
+        get_slab (before reorient_lattice post-processing and before
+        primitive-cell reduction, both of which are outside either law's
+        confirmed precondition -- see the checker docstrings in
+        _scientific_checkers.py for the empirical basis).
+        """
+        try:
+            # PM-SURF-001: dual surface-normal derivation.
+            a_vec, b_vec = struct.lattice.matrix[0], struct.lattice.matrix[1]
+            n1 = np.cross(a_vec, b_vec)
+            n1_norm = np.linalg.norm(n1)
+            if n1_norm > 0:
+                n1 = n1 / n1_norm
+                recip = self.parent.lattice.reciprocal_lattice_crystallographic
+                n2 = recip.get_cartesian_coords(self.miller_index)
+                n2_norm = np.linalg.norm(n2)
+                if n2_norm > 0:
+                    n2 = n2 / n2_norm
+                    cos_angle = float(np.dot(n1, n2))
+                    _sc.check_surface_normal_dual_derivation(cos_angle, np.linalg.cond(recip.matrix))
+        except Exception:
+            pass
+
+        try:
+            # PM-SURF-002: construction-time vs. atom-span layer count.
+            # Precondition: the oriented unit cell must have exactly one
+            # distinct atomic c-fractional layer (confirmed empirically in
+            # Step 4 -- low-symmetry Miller indices like (2,1,0) can place
+            # more than one atomic layer per oriented-unit-cell repeat,
+            # which neither n_layers_slab's sizing formula nor this
+            # recomputation formula models).
+            ouc_c = np.round(np.mod(ouc.frac_coords[:, 2], 1.0), 6)
+            if len(np.unique(ouc_c)) != 1:
+                return
+            c_coords = struct.frac_coords[:, 2]
+            n_layers_total = round(struct.lattice.c / ouc.lattice.c)
+            span = float(c_coords.max() - c_coords.min())
+            n_layers_recompute = round(span * n_layers_total) + 1
+            _sc.check_slab_layer_count_construction_consistency(n_layers_slab, n_layers_recompute)
+        except Exception:
+            pass
 
     def gen_possible_terminations(self, ftol: float = 0.1) -> list[float]:
         """Generate possible terminations by clustering z coordinates.

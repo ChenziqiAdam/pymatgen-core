@@ -547,3 +547,302 @@ def check_decomposition_mass_conservation(max_element_diff, dim):
     """
     tol = 100.0 * eps64 * (dim + 1)
     trigger_if(max_element_diff > tol, "PM-PD-003", diff=max_element_diff, tol=tol)
+
+
+# ---------------------------------------------------------------------------
+# Subsystem 7: core/ewald.py -- Ewald summation electrostatics
+# ---------------------------------------------------------------------------
+
+@_guard
+def check_ewald_eta_split_invariance(e1, e2, eta1, eta2, acc_factor, n_sites):
+    """PM-EWALD-001: total_energy is invariant to the eta real/reciprocal
+    split parameter, for two EwaldSummation objects built with different
+    eta (each with its own eta-dependent auto cutoffs) on the same
+    structure.
+
+    Joint sweep (eta ratio x structure size x acc_factor), NOT single-axis
+    per SANITIZER.md 5.8: 4 structures (NaCl 2-site, NaCl n=2 supercell,
+    orthorhombic NaCl, small-lattice NaCl) x 4 eta pairs (ratios 2x to
+    100x, including an inverted eta1>eta2 pair) x 3 acc_factor values
+    (4, 8, 10). Found the wrong scaling variable on the first pass: an
+    eps64-relative tolerance (diff/(eps64*n_sites*magnitude)) blew up to
+    ~3.4e7 because eta-split truncation error is bounded by the class's
+    OWN documented convergence-digit contract (acc_factor = "number of
+    significant figures each sum is converged to", ewald.py:86-87), not by
+    machine epsilon -- each auto-cutoff is only accurate to
+    ~10^-acc_factor, so two different etas' cutoffs need not agree beyond
+    that floor. Re-scored against diff/(10^-acc_factor * magnitude): worst
+    observed ratio was 2.36 (NaCl n=2 supercell, eta pair (0.2, 20.0),
+    acc_factor=4 -- the most extreme eta ratio at the loosest convergence
+    setting, confirming the joint eta-ratio/acc_factor interaction matters,
+    not acc_factor alone). Tolerance set to 100x*(10^-acc_factor)*magnitude
+    for headroom. A handful of (small-lattice, low-acc_factor, wide-eta-
+    ratio) combinations raised inside EwaldSummation itself (cutoff-radius
+    array shape mismatch when the auto real-space cutoff collapses to zero
+    neighbor shells) -- an existing library precondition boundary, not a
+    checker concern; the checker never runs when construction raises.
+    """
+    diff = abs(e1 - e2)
+    magnitude = max(abs(e1), abs(e2), 1.0)
+    tol = 100.0 * (10.0 ** (-acc_factor)) * magnitude
+    trigger_if(diff > tol, "PM-EWALD-001", diff=diff, tol=tol,
+               eta1=eta1, eta2=eta2, acc_factor=acc_factor, n_sites=n_sites)
+
+
+# ---------------------------------------------------------------------------
+# Subsystem 8: core/structure.py -- redundant neighbor-search implementations
+# ---------------------------------------------------------------------------
+
+@_guard
+def check_neighbor_search_cross_implementation(checker_id, only_in_fast, only_in_old, n_sites, r):
+    """PM-STR-005 / PM-STR-006: get_all_neighbors (or get_all_neighbors_py)
+    finds the same per-site neighbor SET (index, jimage, distance rounded to
+    6 decimals) as the author-declared brute-force oracle
+    get_all_neighbors_old.
+
+    3-structure (fcc Al 1-site, rocksalt NaCl 2-site, perovskite SrTiO3
+    5-site) x 4-cutoff-radius (3.0, 5.0, 5.6, 8.0 -- the last three
+    deliberately chosen to sit near natural neighbor-shell boundaries for
+    these lattices) sweep, comparing get_all_neighbors and
+    get_all_neighbors_py against get_all_neighbors_old as exact
+    (index, jimage, round(distance, 6)) SET equality (order-independent,
+    since all three functions may visit neighbors in different orders):
+    zero mismatches across all 24 (structure, r) combinations for BOTH
+    fast-path functions against the oracle. Because agreement is exact-set
+    equality (a discrete index/image identification problem once distances
+    are rounded to a fixed number of decimals, not a continuous numerical
+    quantity), tol=0 for the set membership test itself; the distance
+    figure carried in a mismatch record uses tol = 100*eps64*r for the
+    rounding of the comparison key only (SANITIZER.md 5.8 X: neighbor
+    identity is discrete once binned).
+    """
+    tol = 100.0 * eps64 * max(r, 1.0)
+    mismatched = bool(only_in_fast) or bool(only_in_old)
+    trigger_if(mismatched, checker_id, only_in_fast=list(only_in_fast),
+               only_in_old=list(only_in_old), n_sites=n_sites, r=r, tol=tol)
+
+
+# ---------------------------------------------------------------------------
+# Subsystem 9: symmetry/analyzer.py -- space-group symmetry detection
+# ---------------------------------------------------------------------------
+
+@_guard
+def check_periodic_symmop_atom_correspondence(max_residual, symprec, n_ops, n_sites):
+    """PM-SYM-001: every spglib-sourced periodic symmetry operation
+    returned by get_symmetry_operations() actually maps every site onto a
+    site of the same species (periodic/minimum-image match), independent
+    of however spglib's internal search found the operation.
+
+    2-structure sweep (rutile TiO2, 6 sites, 16 ops; fcc Cu, 1 site, 48
+    ops) at the default symprec=0.01, checking every (op, site) pair (208
+    total pairs): worst observed periodic-image residual was ~5.1e-16
+    (rutile) and exactly 0.0 (fcc Cu) -- both far below symprec, since a
+    genuinely-correct symmetry operation applied to an exactly-symmetric
+    synthetic structure round-trips to essentially machine precision, not
+    to spglib's detection tolerance itself. Composing two tolerance-bounded
+    steps in sequence (SANITIZER.md 5.8's joint-consideration note for this
+    candidate) -- spglib's own symprec-scale detection plus this checker's
+    own coordinate-matching step -- the tolerance is anchored to symprec
+    (the natural physical scale for "how close counts as the same site")
+    with generous headroom over the observed near-zero residuals, rather
+    than to eps64 alone, since symprec is user-controllable and can be much
+    looser than machine precision.
+    """
+    tol = max(10.0 * symprec, 100.0 * eps64)
+    trigger_if(max_residual > tol, "PM-SYM-001", max_residual=max_residual,
+               tol=tol, symprec=symprec, n_ops=n_ops, n_sites=n_sites)
+
+
+# ---------------------------------------------------------------------------
+# Subsystem 10: core/tensors.py -- physical property tensors
+# ---------------------------------------------------------------------------
+
+@_guard
+def check_tensor_rotation_trace_eigenvalue_invariance(trace0, trace1, eig0, eig1, ortho_err=0.0):
+    """PM-TENS-001: trace and (sorted) eigenvalues of a rank-2 tensor are
+    invariant under a proper rotation applied via Tensor.rotate.
+
+    Joint sweep over tensor magnitude (1e-3 .. 1e6) x rotation angle
+    (1e-6 .. 180-1e-6 degrees, including near-identity and near-180-degree
+    rotations) x 5 random symmetric tensors per cell, independently
+    recomputing trace via np.trace and eigenvalues via np.linalg.eigvalsh
+    on both the input and rotated tensors (code shared with neither
+    Tensor.rotate's SymmOp.transform_tensor einsum contraction): worst
+    observed diff/(eps64*max(1,|trace|)) ratio was 6.76 (magnitude=1e6,
+    angle=45 degrees), worst diff/(eps64*max(1,|eig|)) ratio was 5.80 (same
+    cell).
+
+    FIX (2026-09-18/19, regression-suite firing): the original tolerance
+    (100*eps64*scale, no orthogonality-error term) fired on
+    test_tensors.py::TestTensor::test_convert_to_ieee, a real (non-
+    synthetic) library test, with diff/tol ratios ~90000x over. Root cause:
+    Tensor.rotate accepts a `tol` parameter precisely because its
+    SquareTensor.is_rotation(tol) precondition check does NOT require exact
+    (machine-precision) orthogonality -- convert_to_ieee calls
+    result.rotate(rotation, tol=1e-2) with a rotation matrix from
+    get_ieee_rotation(refine_rotation=False) that is only orthogonal to
+    ~5.5e-5 for one witness (monoclinic rank-2 tensor in
+    ieee_conversion_data.json), not to eps64. The checker's implicit
+    precondition (exact orthogonality) was narrower than PM-TENS-001's
+    actual stated precondition (any rotation is_rotation(tol) accepts) and
+    narrower than what the checker's own call site can observe -- a
+    P-class/T-class mistake, not a real trace/eigenvalue-invariance
+    violation: a congruence transform by an approximately-orthogonal matrix
+    is only approximately trace/eigenvalue-preserving, exactly matching the
+    size of its own orthogonality defect. Fix: thread the actual R@R.T-I
+    deviation of the rotation matrix used (ortho_err, 0.0 for the ordinary
+    exact-rotation call path) into the tolerance, scaled by the tensor
+    magnitude (a congruence's trace/eigenvalue perturbation from a
+    non-orthogonal R is first-order in ortho_err times the tensor's own
+    magnitude). Re-derived jointly on both sweeps: the original exact-
+    rotation sweep (worst ratio ~3.4 under the new formula) and all 8
+    (xtal, refine_rotation) combinations from ieee_conversion_data.json's
+    rank-2 entries (worst ratio ~1.0, the same monoclinic/refine=False
+    witness that originally fired). Tolerance set to
+    100x*(eps64*scale + scale*max(ortho_err,eps64)) for headroom on both.
+    Re-verified: the original triggering test_convert_to_ieee case is now
+    silent, the full test_tensors.py suite is silent, and isolated-
+    sensitivity with a synthetic mismatch (ortho_err=0, i.e. the ordinary
+    exact-rotation precondition) still fires.
+    """
+    diff_tr = abs(trace0 - trace1)
+    tr_scale = max(abs(trace0), 1.0)
+    tol_tr = 100.0 * (eps64 * tr_scale + tr_scale * max(ortho_err, eps64))
+    e0 = np.sort(np.asarray(eig0))
+    e1 = np.sort(np.asarray(eig1))
+    diff_eig = np.abs(e0 - e1).max() if e0.size else 0.0
+    eig_scale = max(np.abs(e0).max() if e0.size else 1.0, 1.0)
+    tol_eig = 100.0 * (eps64 * eig_scale + eig_scale * max(ortho_err, eps64))
+    trigger_if(diff_tr > tol_tr, "PM-TENS-001", family="trace",
+               diff=diff_tr, tol=tol_tr)
+    trigger_if(diff_eig > tol_eig, "PM-TENS-001", family="eigenvalues",
+               diff=diff_eig, tol=tol_eig)
+
+
+# ---------------------------------------------------------------------------
+# Subsystem 11: core/surface.py -- crystal surfaces and slabs
+# ---------------------------------------------------------------------------
+
+@_guard
+def check_surface_normal_dual_derivation(cos_angle, cond_recip):
+    """PM-SURF-001: Slab.normal (direct cross product of the slab's own
+    first two lattice vectors) agrees, up to sign, with the Miller-index-
+    derived reciprocal-lattice normal, for a Slab built WITHOUT the
+    default lattice-reorientation post-processing.
+
+    Precondition confirmed empirically during Step 4 (not assumed): with
+    reorient_lattice=True (the SlabGenerator/Slab default), Slab.normal is
+    ALWAYS exactly [0,0,1] in the lab frame by construction (Slab.__init__
+    rebuilds the lattice via Lattice.from_parameters under
+    reorient_lattice, which fixes a canonical orientation convention
+    decoupled from the original crystallographic frame) -- comparing that
+    fixed lab-frame vector against the Miller-derived crystallographic
+    normal is not this law's subject at all (an observed diff up to 1.0 in
+    cosine, confirmed on fcc Cu and rocksalt NaCl across 5 Miller indices,
+    traced to this reorientation convention, not a bug). This checker is
+    therefore scoped to reorient_lattice=False construction, where a
+    5-Miller-index x 2-structure (fcc Cu, rocksalt NaCl) x 3-thickness
+    sweep found exact agreement (cos_angle within 1.1e-16 of 1.0) in every
+    case. Tolerance set to 100x*eps64*max(1,cond(reciprocal_lattice)) on
+    the |1-|cos_angle|| residual, analogous to PM-LAT-005's cond-scaled
+    tolerance for the same reciprocal-lattice machinery.
+    """
+    diff = abs(1.0 - abs(cos_angle))
+    tol = 100.0 * eps64 * max(cond_recip, 1.0)
+    trigger_if(diff > tol, "PM-SURF-001", diff=diff, tol=tol, cos_angle=cos_angle)
+
+
+@_guard
+def check_slab_layer_count_construction_consistency(n_layers_slab, n_layers_recompute):
+    """PM-SURF-002: the atom-occupied layer count used to SIZE the slab at
+    construction time (n_layers_slab, from height/min_slab_size sizing)
+    matches the layer count recovered by independently measuring where the
+    atoms actually ended up (the c-fractional-coordinate span between the
+    lowest and highest atomic layer, times the total layer count) -- the
+    same post-hoc measurement Slab.get_tasker2_slabs already performs
+    internally for its own, unrelated purpose.
+
+    Precondition and formula both confirmed empirically during Step 4, not
+    assumed: (a) get_slab's actual sizing branch depends on the
+    (default-False) in_unit_planes flag -- an early derivation draft that
+    assumed the in_unit_planes=True branch unconditionally produced
+    spurious "mismatches" that were purely an artifact of reading the
+    wrong branch, not a library defect (fixed by reading n_layers_slab's
+    real value off the exact branch get_slab executes, not a
+    re-derivation); (b) the atom-span recomputation needs a +1 fencepost
+    correction (span_layers * n_layers_total + 1, not span_layers *
+    n_layers_total) because n_layers_slab atomic layers span
+    (n_layers_slab - 1) inter-layer gaps between the first and last atom,
+    confirmed by a 5-Miller-index x 2-structure (fcc Cu, rocksalt NaCl) x
+    4-thickness x 2-in_unit_planes sweep: 35 of 40 cells matched exactly
+    with the +1 correction. The remaining 5 mismatches were isolated to
+    low-symmetry Miller indices, (2,1,0) and (2,1,1), where the oriented
+    unit cell's own atoms are not all coplanar in c -- i.e. more than one
+    distinct atomic z-value already exists within a single oriented-unit-
+    cell repeat, so "one oriented-unit-cell repeat == one atomic layer"
+    (the assumption both n_layers_slab's sizing and the recomputation share)
+    does not hold. PRECONDITION accordingly narrowed to Miller indices
+    whose oriented_unit_cell has exactly one distinct atomic c-fractional
+    layer (checked at the observation point, not assumed a priori) --
+    Step 4's job per this candidate's own note that Step 4 must confirm
+    interactions not modeled by either formula as drafted. Within that
+    precondition, both quantities are exact integers by construction
+    (layer counts), so tol=0 (SANITIZER.md 5.8 X).
+    """
+    trigger_if(n_layers_slab != n_layers_recompute, "PM-SURF-002",
+               n_layers_slab=n_layers_slab, n_layers_recompute=n_layers_recompute)
+
+
+# ---------------------------------------------------------------------------
+# Subsystem 12: core/elasticity/elastic.py -- elastic tensor derived properties
+# ---------------------------------------------------------------------------
+
+@_guard
+def check_voigt_reuss_variational_bound(k_voigt, k_reuss, g_voigt, g_reuss, cond_voigt):
+    """PM-ELAST-001: k_voigt >= k_reuss and g_voigt >= g_reuss for any
+    physically stable (k_vrh > 0, g_vrh > 0) ElasticTensor -- the Voigt-
+    Reuss variational bounds theorem.
+
+    5 representative cubic-symmetry elastic tensors spanning the physically
+    interesting range (Cu-like, Al-like, a near-isotropic tensor with
+    c44 close to (c11-c12)/2, a highly anisotropic tensor, and a weakly
+    stable tensor with a small k_vrh/g_vrh gap near the raise_if_unphysical
+    boundary), checking both the K and G bound jointly with the tensor's
+    own Voigt-matrix conditioning (since k_reuss depends on inverting that
+    matrix): every case satisfied both bounds (worst negative excursion
+    exactly 0, i.e. no violation observed at all -- consistent with
+    SANITIZER.md 5.7.2, a silent bank is not a failure). Tolerance set to
+    100x*eps64*max(1,|K or G value|)*max(1,cond(voigt)) on the (K_reuss -
+    K_voigt) / (G_reuss - G_voigt) excess, jointly across conditioning and
+    modulus magnitude per SANITIZER.md 5.8's joint-axis requirement (not
+    swept independently, since a near-singular Voigt matrix is exactly the
+    regime where k_reuss's inversion-based computation would show the
+    largest gap-violating error, if this checker's slack were mis-scaled).
+    """
+    mag = max(abs(k_voigt), abs(k_reuss), abs(g_voigt), abs(g_reuss), 1.0)
+    tol = 100.0 * eps64 * mag * max(cond_voigt, 1.0)
+    gap_k = k_voigt - k_reuss
+    gap_g = g_voigt - g_reuss
+    trigger_if(gap_k < -tol, "PM-ELAST-001", family="bulk_modulus",
+               k_voigt=k_voigt, k_reuss=k_reuss, gap=gap_k, tol=tol)
+    trigger_if(gap_g < -tol, "PM-ELAST-001", family="shear_modulus",
+               g_voigt=g_voigt, g_reuss=g_reuss, gap=gap_g, tol=tol)
+
+
+@_guard
+def check_universal_anisotropy_non_negative(anisotropy, cond_voigt, mag):
+    """PM-ELAST-002: universal_anisotropy >= 0 for any physically stable
+    ElasticTensor -- a direct algebraic consequence of PM-ELAST-001's same
+    Voigt-Reuss bound theorem (5*(g_voigt/g_reuss) + (k_voigt/k_reuss) - 6,
+    each ratio >= 1 by PM-ELAST-001).
+
+    Same 5-tensor sweep as PM-ELAST-001 (derived jointly, not
+    independently, per SANITIZER.md 5.8): worst (most negative)
+    universal_anisotropy observed was 0.0 (the exactly-isotropic synthetic
+    tensor, c44 = (c11-c12)/2 exactly) -- no violation observed. Tolerance
+    set to 100x*eps64*max(1,mag)*max(1,cond(voigt)), scaled consistently
+    with PM-ELAST-001's tolerance since a real violation here would be an
+    algebraic combination of the same underlying ratio errors.
+    """
+    tol = 100.0 * eps64 * max(mag, 1.0) * max(cond_voigt, 1.0)
+    trigger_if(anisotropy < -tol, "PM-ELAST-002", anisotropy=anisotropy, tol=tol)

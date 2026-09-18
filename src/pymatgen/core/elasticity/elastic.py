@@ -24,6 +24,7 @@ from pymatgen.core.constants import hbar
 from pymatgen.core.tensors import DEFAULT_QUAD, SquareTensor, Tensor, TensorCollection, get_uvec
 from pymatgen.core.units import Unit
 from pymatgen.util.due import Doi, due
+from pymatgen import _scientific_checkers as _sc
 
 from .strain import Strain
 from .stress import Stress
@@ -201,7 +202,26 @@ class ElasticTensor(NthOrderElasticTensor):
     @property
     def k_vrh(self) -> float:
         """The K_vrh (Voigt-Reuss-Hill) average bulk modulus (in GPa)."""
-        return 0.5 * (self.k_voigt + self.k_reuss)
+        k_vrh_value = 0.5 * (self.k_voigt + self.k_reuss)
+        if _sc.enabled():
+            try:
+                g_vrh_value = 0.5 * (self.g_voigt + self.g_reuss)
+                # PM-ELAST-001/002 precondition: physically stable tensor
+                # only (k_vrh > 0 and g_vrh > 0), the same boundary
+                # raise_if_unphysical already enforces elsewhere in this
+                # class -- a tensor outside this boundary (e.g. a
+                # deliberately-corrupted test fixture probing the
+                # raise_if_unphysical exception path) is outside the
+                # Voigt-Reuss variational bound theorem's domain of
+                # meaning, not a hard case within it.
+                if k_vrh_value > 0 and g_vrh_value > 0:
+                    _sc.check_voigt_reuss_variational_bound(
+                        self.k_voigt, self.k_reuss, self.g_voigt, self.g_reuss,
+                        np.linalg.cond(self.voigt),
+                    )
+            except Exception:
+                pass
+        return k_vrh_value
 
     @property
     def g_vrh(self) -> float:
@@ -409,7 +429,20 @@ class ElasticTensor(NthOrderElasticTensor):
     @property
     def universal_anisotropy(self) -> float:
         """The universal anisotropy value."""
-        return 5 * self.g_voigt / self.g_reuss + self.k_voigt / self.k_reuss - 6.0
+        anisotropy = 5 * self.g_voigt / self.g_reuss + self.k_voigt / self.k_reuss - 6.0
+        if _sc.enabled():
+            try:
+                # PM-ELAST-002 precondition: same physically-stable-tensor
+                # boundary as PM-ELAST-001 (see k_vrh's FIX note) -- k_vrh
+                # and g_vrh must both be positive before this law applies.
+                k_vrh_value = 0.5 * (self.k_voigt + self.k_reuss)
+                g_vrh_value = 0.5 * (self.g_voigt + self.g_reuss)
+                if k_vrh_value > 0 and g_vrh_value > 0:
+                    mag = max(abs(self.k_voigt), abs(self.k_reuss), abs(self.g_voigt), abs(self.g_reuss), 1.0)
+                    _sc.check_universal_anisotropy_non_negative(anisotropy, np.linalg.cond(self.voigt), mag)
+            except Exception:
+                pass
+        return anisotropy
 
     @property
     def homogeneous_poisson(self) -> float:

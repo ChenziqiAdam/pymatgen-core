@@ -2135,7 +2135,53 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
                     )
                 )
 
-        return [neighbor_dict[i] for i in range(len(sites))]
+        result = [neighbor_dict[i] for i in range(len(sites))]
+        if _sc.enabled() and sites is self.sites and not getattr(self, "_in_neighbor_oracle_check", False):
+            self._cross_check_neighbor_search("PM-STR-005", result, r, numerical_tol)
+        return result
+
+    def _cross_check_neighbor_search(self, checker_id, fast_result, r, numerical_tol):
+        """Shared re-call helper for PM-STR-005/PM-STR-006: compare a
+        fast-path neighbor search's per-site result set against the
+        author-declared brute-force oracle get_all_neighbors_old.
+
+        Gated on a small problem-size product (site count * cutoff radius)
+        to keep the O(supercell_size * n_sites) oracle affordable during
+        ordinary test runs -- a P-class precondition on problem size, not a
+        restriction of the underlying law (SANITIZER.md 5.8 P style note,
+        mirrored from this candidate's own Step 4 guidance in
+        LAW_CANDIDATES.md).
+        """
+        if len(self) * max(r, 1.0) > 200:
+            return
+        try:
+            self._in_neighbor_oracle_check = True
+            old_result = self.get_all_neighbors_old(r, include_index=True, include_image=True)
+        except Exception:
+            return
+        finally:
+            self._in_neighbor_oracle_check = False
+
+        def to_set(neighbors, is_old=False):
+            out = set()
+            if is_old:
+                for item in neighbors:
+                    site, dist, idx, image = item
+                    out.add((idx, tuple(int(v) for v in image), round(float(dist), 6)))
+            else:
+                for n in neighbors:
+                    out.add((n.index, tuple(int(v) for v in n.image), round(float(n.nn_distance), 6)))
+            return out
+
+        for i in range(len(fast_result)):
+            fast_set = to_set(fast_result[i])
+            old_set = to_set(old_result[i], is_old=True)
+            only_fast = fast_set - old_set
+            only_old = old_set - fast_set
+            if only_fast or only_old:
+                _sc.check_neighbor_search_cross_implementation(
+                    checker_id, only_fast, only_old, len(self), r
+                )
 
     def get_all_neighbors_py(
         self,
@@ -2211,6 +2257,8 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
                     )
                     nns.append(neighbor)
             neighbors.append(nns)
+        if _sc.enabled() and sites is self.sites and not getattr(self, "_in_neighbor_oracle_check", False):
+            self._cross_check_neighbor_search("PM-STR-006", neighbors, r, numerical_tol)
         return neighbors
 
     @deprecated(get_all_neighbors, "This is retained purely for checking purposes.")
