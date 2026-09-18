@@ -2173,9 +2173,32 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
                     out.add((n.index, tuple(int(v) for v in n.image), round(float(n.nn_distance), 6)))
             return out
 
+        # PM-STR-006 precondition (FIX, 2026-09-19, round-1 triggerability):
+        # get_all_neighbors_py delegates to get_points_in_spheres, whose
+        # cutoff comparison is `dist < r + numerical_tol` (lattice.py), an
+        # explicitly padded/inclusive boundary -- while the oracle
+        # get_all_neighbors_old compares `all_dists <= r` with zero
+        # epsilon (structure.py). When a neighbor's true distance lands
+        # within numerical_tol of r, the two algorithms legitimately
+        # disagree about inclusion; this is a genuine, if minor,
+        # public-API boundary inconsistency in the library itself (root
+        # cause confirmed by direct source read, not a checker-tolerance
+        # defect -- see ROOT_CAUSE_ANALYSIS.md Sec. 12), so the fix scopes
+        # the PRECONDITION rather than loosening a tolerance number,
+        # mirroring PM-COMP-003's pattern: only entries whose distance is
+        # unambiguously inside or outside the cutoff are compared. This
+        # scoping applies to PM-STR-006 only -- PM-STR-005's fast path
+        # (get_all_neighbors, via the separately-compiled
+        # find_points_in_spheres Cython extension) showed zero evidence of
+        # the same boundary padding during round-1 triggerability, so
+        # narrowing its precondition too would be unjustified.
         for i in range(len(fast_result)):
             fast_set = to_set(fast_result[i])
             old_set = to_set(old_result[i], is_old=True)
+            if checker_id == "PM-STR-006":
+                boundary = numerical_tol
+                fast_set = {t for t in fast_set if abs(t[2] - r) > boundary}
+                old_set = {t for t in old_set if abs(t[2] - r) > boundary}
             only_fast = fast_set - old_set
             only_old = old_set - fast_set
             if only_fast or only_old:

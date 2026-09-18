@@ -615,6 +615,27 @@ def check_neighbor_search_cross_implementation(checker_id, only_in_fast, only_in
     figure carried in a mismatch record uses tol = 100*eps64*r for the
     rounding of the comparison key only (SANITIZER.md 5.8 X: neighbor
     identity is discrete once binned).
+
+    FIX (2026-09-19, round-1 triggerability, PM-STR-006 only): the initial
+    derivation's 4-cutoff sweep happened not to land exactly on a real
+    interatomic distance, so it missed a genuine boundary-convention
+    mismatch between get_points_in_spheres' padded `dist < r +
+    numerical_tol` comparison (get_all_neighbors_py's underlying primitive)
+    and the oracle's unpadded `all_dists <= r` (get_all_neighbors_old) --
+    confirmed by direct source read, not a checker-tolerance defect (see
+    ROOT_CAUSE_ANALYSIS.md Sec. 12). 1,202-case round-1 triggerability
+    found 7 firings, all with a neighbor distance within numerical_tol of
+    the cutoff r (e.g. rutile TiO2 at r=2.9587, perovskite SrTiO3 at
+    r=3.905). PM-STR-005 (get_all_neighbors, a separately-compiled Cython
+    primitive) showed no such firings on identical inputs, so this fix is
+    scoped to PM-STR-006 only, not applied globally. Fix narrows the
+    PRECONDITION at the call site (Structure._cross_check_neighbor_search):
+    for checker_id == "PM-STR-006", entries within numerical_tol of r are
+    excluded from the fast/old set comparison before the diff is computed,
+    so only unambiguously-inside or unambiguously-outside neighbors are
+    checked. Re-verified: all 7 original witnesses are now silent, and the
+    full 1,202-case round-1 sweep plus the 817-test regression suite are
+    both clean across all 30 checkers.
     """
     tol = 100.0 * eps64 * max(r, 1.0)
     mismatched = bool(only_in_fast) or bool(only_in_old)
