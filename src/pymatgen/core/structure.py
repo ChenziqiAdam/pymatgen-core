@@ -2192,11 +2192,30 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
         # find_points_in_spheres Cython extension) showed zero evidence of
         # the same boundary padding during round-1 triggerability, so
         # narrowing its precondition too would be unjustified.
+        #
+        # FIX (2026-09-19, round-2 triggerability): the round-1 fix above
+        # excluded points within `numerical_tol` of `r`, but `to_set()`
+        # rounds distances to 6 decimal places (lines above) BEFORE this
+        # exclusion runs, while the exclusion width used the caller's raw,
+        # unrounded numerical_tol with no floor. For numerical_tol below
+        # ~5e-7 (half the 6-decimal rounding granularity), the exclusion
+        # band became narrower than the rounding noise it was meant to
+        # absorb, so genuinely ambiguous boundary points slipped through
+        # unexcluded -- confirmed by round-2's dedicated numerical_tol
+        # sweep (1e-12 to 1e-2, an axis round-1's fix and its
+        # re-verification never varied) and reproduced directly (e.g.
+        # diamond Si fires at numerical_tol=1e-8, silent at neighboring
+        # values, an exact flip at the rounding scale -- see
+        # ROOT_CAUSE_ANALYSIS.md Sec. 14). Fix: floor the exclusion width
+        # at the rounding granularity itself, so it can never be narrower
+        # than the noise `to_set()`'s own rounding introduces, regardless
+        # of how small a numerical_tol the caller passes.
+        _ROUNDING_GRANULARITY = 5e-7  # half of 10**-6, matching to_set()'s round(..., 6)
         for i in range(len(fast_result)):
             fast_set = to_set(fast_result[i])
             old_set = to_set(old_result[i], is_old=True)
             if checker_id == "PM-STR-006":
-                boundary = numerical_tol
+                boundary = max(numerical_tol, _ROUNDING_GRANULARITY)
                 fast_set = {t for t in fast_set if abs(t[2] - r) > boundary}
                 old_set = {t for t in old_set if abs(t[2] - r) > boundary}
             only_fast = fast_set - old_set
