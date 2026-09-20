@@ -19,6 +19,7 @@ from monty.dev import deprecated
 from monty.io import zopen
 from monty.serialization import loadfn
 
+from pymatgen import _scientific_checkers as _sc
 from pymatgen.core import Composition, DummySpecies, Element, Lattice, PeriodicSite, Species, Structure, get_el_sp
 from pymatgen.core.operations import MagSymmOp, SymmOp
 from pymatgen.electronic_structure.core import Magmom
@@ -647,7 +648,9 @@ class CifParser:
                 raise ValueError("Length of magmoms and coords don't match.")
 
             magmoms_out: list[Magmom] = []
+            n_ops = len(self.symmetry_operations)
             for tmp_coord, tmp_magmom in zip(coords, magmoms, strict=True):
+                _sc_orbit_coords: list[NDArray] = []
                 for op in self.symmetry_operations:
                     coord = op.operate(tmp_coord)
                     coord = np.array([i - math.floor(i) for i in coord])
@@ -672,20 +675,37 @@ class CifParser:
                     else:
                         magmom = Magmom(tmp_magmom)
 
+                    if _sc.enabled() and n_ops and not in_coord_list_pbc(
+                        _sc_orbit_coords, coord, atol=self._site_tolerance
+                    ):
+                        _sc_orbit_coords.append(coord)
+
                     if not in_coord_list_pbc(coords_out, coord, atol=self._site_tolerance):
                         coords_out.append(coord)
                         magmoms_out.append(magmom)
                         labels_out.append(labels.get(tmp_coord, "no_label"))
+                if _sc.enabled() and n_ops:
+                    _sc.check_cif_symmetry_orbit_divisibility(n_ops, len(_sc_orbit_coords), tmp_coord)
 
             return coords_out, magmoms_out, labels_out
 
+        n_ops = len(self.symmetry_operations)
         for tmp_coord in coords:
+            _sc_orbit_coords = []
             for op in self.symmetry_operations:
                 coord = op.operate(tmp_coord)
                 coord = np.array([i - math.floor(i) for i in coord])
+
+                if _sc.enabled() and n_ops and not in_coord_list_pbc(
+                    _sc_orbit_coords, coord, atol=self._site_tolerance
+                ):
+                    _sc_orbit_coords.append(coord)
+
                 if not in_coord_list_pbc(coords_out, coord, atol=self._site_tolerance):
                     coords_out.append(coord)
                     labels_out.append(labels.get(tmp_coord, "no_label"))
+            if _sc.enabled() and n_ops:
+                _sc.check_cif_symmetry_orbit_divisibility(n_ops, len(_sc_orbit_coords), tmp_coord)
 
         dummy_magmoms = [Magmom(0)] * len(coords_out)
         return coords_out, dummy_magmoms, labels_out

@@ -990,7 +990,21 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
         """
         if len(self.elements) == 1:
             return ({self.elements[0].symbol: 0.0},)
-        return self._get_oxi_state_guesses(all_oxi_states, max_sites, oxi_states_override, target_charge)[0]
+        sols = self._get_oxi_state_guesses(all_oxi_states, max_sites, oxi_states_override, target_charge)[0]
+        if _sc.enabled() and not getattr(self, "_scibench_recall", False):
+            # Weight the RETURNED (possibly max_sites-reduced-and-rescaled)
+            # average oxidation states by the ORIGINAL composition's own
+            # atom counts, not the (possibly reduced) composition the
+            # internal search actually balanced. See PM-COMP-005 in
+            # _scientific_checkers.py and sanitizers.json for the real
+            # defect this check found when target_charge != 0.
+            el_amt_orig = self.get_el_amt_dict()
+            num_atoms = self.num_atoms
+            for sol in sols:
+                weighted_sum = sum(oxi * el_amt_orig.get(el, 0.0) for el, oxi in sol.items())
+                diff = abs(weighted_sum - target_charge)
+                _sc.check_oxi_state_guess_charge_balance(diff, num_atoms, target_charge)
+        return sols
 
     def replace(self, elem_map: dict[str, str | dict[str, float]]) -> Self:
         """Replace elements in a composition. Returns a new Composition, leaving the old one unchanged.

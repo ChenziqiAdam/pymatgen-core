@@ -867,3 +867,145 @@ def check_universal_anisotropy_non_negative(anisotropy, cond_voigt, mag):
     """
     tol = 100.0 * eps64 * max(mag, 1.0) * max(cond_voigt, 1.0)
     trigger_if(anisotropy < -tol, "PM-ELAST-002", anisotropy=anisotropy, tol=tol)
+
+
+# ---------------------------------------------------------------------------
+# Subsystem 13: core/structure.py -- Structure.interpolate (2026-09-20 pass)
+# ---------------------------------------------------------------------------
+
+@_guard
+def check_interpolate_endpoint_reproduction(diff_start, diff_end, magnitude, has_end):
+    """PM-STR-007: interpolate(end_structure, ...)'s x=0 and x=1 images
+    reproduce the start and end structures exactly, up to an integer
+    lattice translation.
+
+    DEVIATION FROM THE DRAFTING DOC (pymatgen_new_candidates_scan_2026-09-20.md):
+    the doc's invariant compared raw fractional coordinates directly
+    (``interpolate(...)[-1].frac_coords`` close to ``end_structure.frac_coords``).
+    An adversarial sweep (60 random-lattice pairs x 3 nimages forms x 2
+    autosort_tol values x scale 1e-3..1e3, see derive_tol2.py) found this
+    literal-coordinate comparison fires with an O(1) (integer-sized)
+    discrepancy whenever ``pbc=True`` (the default) and the raw end_coords
+    - start_coords displacement along a periodic axis exceeds 0.5 in
+    fractional units: interpolate.py's own periodic wrap-around correction
+    (``vec[:, self.pbc] -= np.round(vec[:, self.pbc])``, structure.py) is
+    intentional, documented behavior ("use periodic boundary conditions to
+    find the shortest path between endpoints") that legitimately returns
+    the endpoint at a DIFFERENT periodic image than the literal
+    end_structure coordinates -- not a bug. The genuine law is therefore
+    that the returned endpoint matches the requested endpoint MODULO an
+    integer lattice translation (fractional coordinates equal mod 1), which
+    is what this checker actually verifies (the caller computes
+    ``diff = frac_diff - round(frac_diff)`` before passing it in). Re-swept
+    the same adversarial grid under the mod-1 formulation: worst observed
+    diff/(eps64*magnitude) ratio was 1.0 (both endpoints, both pbc values).
+    Tolerance set to 100x*eps64*max(1,magnitude) for headroom. The
+    ``pbc=False`` path (no wrap-around at all) trivially satisfies the same
+    mod-1 comparison since diff is already ~0 there. Confirmed silent
+    across the full targeted regression suite.
+    """
+    tol = 100.0 * eps64 * max(magnitude, 1.0)
+    trigger_if(diff_start > tol, "PM-STR-007", family="start", diff=diff_start, tol=tol)
+    if has_end:
+        trigger_if(diff_end > tol, "PM-STR-007", family="end", diff=diff_end, tol=tol)
+
+
+@_guard
+def check_interpolation_composition_conservation(diff, n_elements, image_index):
+    """PM-STR-008: every image returned by Structure.interpolate has the
+    same composition as the start structure -- interpolating atomic
+    positions must not create, destroy, or relabel atoms.
+
+    30-pair sweep (random structures, 2-7 sites) x 2 nimages forms
+    (integer and explicit fractional list): worst observed per-element
+    composition difference across every returned image was exactly 0.0
+    (Structure.composition is a Counter-style aggregation over the same
+    `sp = self.species_and_occu` list reused unchanged for every
+    constructed image, so this genuinely never involves floating-point
+    accumulation for ordered structures -- the check has real content only
+    for disordered/partial-occupancy sites, per the drafting doc's own
+    open Step-4 question). Tolerance set to 100x*eps64*max(1,n_elements)
+    for headroom on any future floating-point occupancy accumulation.
+    Confirmed silent across the full targeted regression suite.
+    """
+    tol = 100.0 * eps64 * max(n_elements, 1)
+    trigger_if(diff > tol, "PM-STR-008", diff=diff, tol=tol, image_index=image_index)
+
+
+# ---------------------------------------------------------------------------
+# Subsystem 14: core/composition.py -- oxi_state_guesses (2026-09-20 pass)
+# ---------------------------------------------------------------------------
+
+@_guard
+def check_oxi_state_guess_charge_balance(diff, num_atoms, target_charge):
+    """PM-COMP-005: oxi_state_guesses's returned average oxidation states,
+    weighted by the ORIGINAL (pre-max_sites-reduction) composition's atom
+    counts, sum to target_charge.
+
+    REAL BUG FOUND (not a checker-calibration issue): _get_oxi_state_guesses
+    (composition.py) reduces the composition via max_sites BEFORE running
+    its charge-balance search, so the internal filter `sum(x) ==
+    target_charge` (composition.py:1215) is evaluated against the REDUCED
+    composition's integer sums, then rescaled to a per-element AVERAGE
+    oxidation state by dividing by the reduced composition's own el_amt.
+    When target_charge == 0 this rescaling is charge-neutral to reduction
+    (0 * factor == 0), which is why an initial neutral-charge-only sweep
+    found no discrepancy. A nonzero-target_charge sweep (see
+    derive_tol2.py) found a genuine violation:
+    `Composition("Fe2O4").oxi_state_guesses(max_sites=-1, target_charge=-2)`
+    returns `{"Fe": 2.0, "O": -2.0}` (correctly charge-balancing the
+    REDUCED "FeO2" to -2: 1*2 + 2*(-2) == -2), but applied to the ORIGINAL
+    "Fe2O4" (2 Fe, 4 O) this sums to 2*2 + 4*(-2) == -4, not the requested
+    -2 -- confirmed against the correct answer from the same call with
+    max_sites=None (no reduction), which returns {"Fe": 3.0, "O": -2.0}
+    (3*2 + (-2)*4 == -2, correct). Root cause: the per-element average is
+    reduction-invariant only when target_charge == 0; for nonzero
+    target_charge the average from the reduced composition does not
+    rescale back to satisfy the ORIGINAL composition's charge constraint
+    (the model is not a homogeneous constraint in that case). This is a
+    scientific defect in the public API's documented contract
+    ("the desired total charge on the structure"), not a checker
+    calibration gap.
+
+    Tolerance: the discrepancy above is O(2) absolute on a 6-atom
+    composition, many orders of magnitude over any float64 rounding-scale
+    slack. A same-composition, target_charge=0 sweep (30 compositions,
+    with and without max_sites reduction) found worst diff/(eps64*num_atoms)
+    ratio 0.0 (exactly exact), so the T-derivation for the *legitimate*
+    (target_charge == 0 or unreduced) region is rounding-scale only.
+    Tolerance set to 100x*eps64*max(1,num_atoms) -- the real bug above
+    fires many orders of magnitude past this, exactly as SANITIZER.md 5.7.2
+    expects for a genuine violation.
+    """
+    tol = 100.0 * eps64 * max(num_atoms, 1.0)
+    trigger_if(diff > tol, "PM-COMP-005", diff=diff, tol=tol,
+               num_atoms=num_atoms, target_charge=target_charge)
+
+
+# ---------------------------------------------------------------------------
+# Subsystem 15: io/cif.py -- CifParser._unique_coords (2026-09-20 pass)
+# ---------------------------------------------------------------------------
+
+@_guard
+def check_cif_symmetry_orbit_divisibility(n_ops, orbit_size, coord):
+    """PM-CIF-001: the size of the symmetry-equivalent orbit _unique_coords
+    expands from a single asymmetric-unit coordinate must evenly divide the
+    number of parsed symmetry operations (orbit-stabilizer theorem: any
+    orbit's size is |G|/|stabilizer|, hence a divisor of |G|).
+
+    This is a purely integer, discrete-structure check (SANITIZER.md 5.8
+    X): both n_ops and orbit_size are counts, so tol=0 for the divisibility
+    predicate itself. The only floating-point sensitivity is INDIRECT, via
+    self._site_tolerance's effect on which transformed points
+    in_coord_list_pbc treats as duplicates when deciding orbit membership
+    (a P-class concern, not a T-class one) -- a coordinate sitting almost
+    exactly on a symmetry element (a special-position Wyckoff site) is the
+    natural adversarial input for this indirect sensitivity, not a reason
+    to add slack to the divisibility check itself. No adversarial input
+    that flips this checker's own integer result was found in this pass's
+    Step 4/5 review (a fresh, dedicated fuzz of near-special-position
+    coordinates against several real CIFs is left to the triggerability
+    round per SANITIZER.md 8, not this instrumentation step).
+    """
+    trigger_if(orbit_size <= 0 or n_ops % orbit_size != 0, "PM-CIF-001",
+               n_ops=n_ops, orbit_size=orbit_size, coord=list(coord))

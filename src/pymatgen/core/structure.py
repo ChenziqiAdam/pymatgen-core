@@ -2643,6 +2643,37 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
                     labels=self.labels,
                 )
             )
+
+        if _sc.enabled() and structs:
+            images_arr = np.asarray(images, dtype=float)
+            magnitude = max(
+                1.0,
+                float(np.max(np.abs(start_coords))) if start_coords.size else 1.0,
+                float(np.max(np.abs(end_coords))) if end_coords.size else 1.0,
+            )
+
+            def _mod1(diff_arr):
+                # Fold a fractional-coordinate difference into [-0.5, 0.5]
+                # so that the endpoint law is checked modulo an integer
+                # lattice translation, matching the pbc=True wrap-around
+                # `interpolate` itself applies to `vec` above (see
+                # PM-STR-007's docstring in _scientific_checkers.py).
+                return diff_arr - np.round(diff_arr)
+
+            first_diff = float(np.max(np.abs(_mod1(structs[0].frac_coords - start_coords))))
+            has_end = bool(images_arr.size and abs(float(images_arr[-1]) - end_amplitude) < 1e-12)
+            end_diff = 0.0
+            if has_end:
+                end_diff = float(np.max(np.abs(_mod1(structs[-1].frac_coords - end_coords))))
+            _sc.check_interpolate_endpoint_reproduction(first_diff, end_diff, magnitude, has_end)
+
+            n_elements = max(len(self.composition.elements), 1)
+            for idx, image in enumerate(structs):
+                comp_diff = 0.0
+                for el in self.composition.elements:
+                    comp_diff = max(comp_diff, abs(image.composition[el] - self.composition[el]))
+                _sc.check_interpolation_composition_conservation(comp_diff, n_elements, idx)
+
         return structs
 
     def get_miller_index_from_site_indexes(
