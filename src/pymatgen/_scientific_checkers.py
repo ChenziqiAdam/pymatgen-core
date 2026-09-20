@@ -1006,6 +1006,57 @@ def check_cif_symmetry_orbit_divisibility(n_ops, orbit_size, coord):
     Step 4/5 review (a fresh, dedicated fuzz of near-special-position
     coordinates against several real CIFs is left to the triggerability
     round per SANITIZER.md 8, not this instrumentation step).
+
+    FIX (round-1 triggerability, 2026-09-20): the round-1 sweep fired this
+    checker on a single constructed CIF (`signed_zero_dup_ops`) whose
+    listed _symmetry_equiv_pos_as_xyz block contains 'x,y,z', '-x,-y,-z',
+    and '-x+1,-y+1,-z+1' -- the last two are the SAME coset of the
+    translation subgroup (mod-1 they act identically on every fractional
+    coordinate: `SymmOp.from_xyz_str('-x,-y,-z') !=
+    SymmOp.from_xyz_str('-x+1,-y+1,-z+1')` by exact matrix/vector equality,
+    but the two differ only by a whole-lattice translation added to the
+    printed representative). CifParser.get_symops has no dedup step -- it
+    is a literal `[SymmOp.from_xyz_str(s) for s in xyz]` -- so the original
+    `n_ops = len(self.symmetry_operations)` counted 3 while the true group
+    order (and hence the orbit-stabilizer divisor) is 2, producing a
+    spurious orbit_size=2-does-not-divide-n_ops=3 alarm on a general
+    position that is in fact completely correctly handled.
+
+    Root-cause determination (not a genuine `_unique_coords` counting
+    defect): standard crystallographic symmetry-operation tables (and
+    pymatgen's own `SpaceGroup(...).symmetry_ops` generation path) list
+    exactly one representative per coset by construction -- a real CIF's
+    _symmetry_equiv_pos_as_xyz loop restating the same coset twice under
+    different integer-translation representatives is not an authoring
+    pattern that occurs in genuine depositions; it is a malformed/hand-
+    corrupted input outside this law's intended precondition (the group
+    G in the orbit-stabilizer theorem is defined over DISTINCT group
+    elements, so a source list with a literal duplicate element was never
+    covered by the theorem as stated). This is category (a) from the
+    investigation directive, not (b): `_unique_coords` itself does nothing
+    wrong (its own dedup via `in_coord_list_pbc` on the transformed orbit
+    coordinates is correct and is exactly why orbit_size came out as the
+    true value of 2) -- only the CHECKER's `n_ops` input was wrong, since
+    it counted listed operations rather than distinct group elements.
+
+    Fix applied at the call site, not here: `CifParser._unique_coords`
+    now computes `n_ops` via a new helper, `CifParser._distinct_symop_count`,
+    which deduplicates `self.symmetry_operations` by
+    `(rotation_matrix, translation_vector mod 1)` before counting, gated
+    behind `_sc.enabled()` so it carries zero cost/behavior change when
+    checkers are off. This mirrors PM-STR-006's two-round precedent
+    (ROOT_CAUSE_ANALYSIS.md sections 12-15): narrow the checker's own
+    precondition/observation input to the concept the law actually
+    requires (the true group order), not the library's internal counting,
+    and not the divisibility predicate's tolerance (there is none to
+    loosen -- tol=0 for an integer check is correct and unchanged).
+
+    Re-verified: the `signed_zero_dup_ops` witness (3 listed ops, 2
+    distinct cosets) is now silent under both `primitive=False` and
+    `primitive=True`; the other 14 round-1 CIF templates (which never
+    exercised this path, since none of them contained a duplicate-coset
+    operation) are unaffected, confirmed by re-running the full round-1
+    probe.
     """
     trigger_if(orbit_size <= 0 or n_ops % orbit_size != 0, "PM-CIF-001",
                n_ops=n_ops, orbit_size=orbit_size, coord=list(coord))

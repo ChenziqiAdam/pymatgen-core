@@ -629,6 +629,31 @@ class CifParser:
 
         return data
 
+    def _distinct_symop_count(self) -> int:
+        """Count of symmetry_operations after deduplicating operations that
+        differ only by a whole-lattice-translation (i.e. that are the same
+        coset of the translation subgroup, restated with a different integer
+        offset in the fractional-coordinate representative). Used as the
+        group order `n_ops` for PM-CIF-001's orbit-stabilizer divisibility
+        check (see FIX note on check_cif_symmetry_orbit_divisibility in
+        _scientific_checkers.py): a literal listed-operation count is not
+        the same thing as the group order whenever the listed operations
+        contain such a duplicate-coset entry, which the orbit-stabilizer
+        theorem's divisor is defined against.
+        """
+        seen: list[tuple[NDArray, NDArray]] = []
+        count = 0
+        for op in self.symmetry_operations:
+            rot = op.rotation_matrix
+            trans = op.translation_vector - np.floor(op.translation_vector)
+            if not any(
+                np.allclose(rot, seen_rot, atol=1e-6) and np.allclose(trans, seen_trans, atol=1e-6)
+                for seen_rot, seen_trans in seen
+            ):
+                seen.append((rot, trans))
+                count += 1
+        return count
+
     def _unique_coords(
         self,
         coords: list[tuple[float, float, float]],
@@ -648,7 +673,7 @@ class CifParser:
                 raise ValueError("Length of magmoms and coords don't match.")
 
             magmoms_out: list[Magmom] = []
-            n_ops = len(self.symmetry_operations)
+            n_ops = self._distinct_symop_count() if _sc.enabled() else len(self.symmetry_operations)
             for tmp_coord, tmp_magmom in zip(coords, magmoms, strict=True):
                 _sc_orbit_coords: list[NDArray] = []
                 for op in self.symmetry_operations:
@@ -689,7 +714,7 @@ class CifParser:
 
             return coords_out, magmoms_out, labels_out
 
-        n_ops = len(self.symmetry_operations)
+        n_ops = self._distinct_symop_count() if _sc.enabled() else len(self.symmetry_operations)
         for tmp_coord in coords:
             _sc_orbit_coords = []
             for op in self.symmetry_operations:
