@@ -1736,8 +1736,19 @@ class Lattice(MSONable):
                     np.asarray(fc) + np.asarray(frac_coords2) - np.asarray(frac_coords1)
                 )
                 dist_recomputed = np.linalg.norm(cart)
+                frac_operand_scale = float(
+                    np.max(
+                        np.abs(np.asarray(fc))
+                        + np.abs(np.asarray(frac_coords2))
+                        + np.abs(np.asarray(frac_coords1))
+                    )
+                )
                 _sc.check_pbc_distance_image_consistency(
-                    dist, dist_recomputed, max(self.lengths), np.linalg.cond(self._matrix)
+                    dist,
+                    dist_recomputed,
+                    max(self.lengths),
+                    np.linalg.cond(self._matrix),
+                    frac_operand_scale,
                 )
             return dist, fc
 

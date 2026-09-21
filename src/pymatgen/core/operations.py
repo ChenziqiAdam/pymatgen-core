@@ -163,7 +163,22 @@ class SymmOp(MSONable):
             try:
                 single_stack = np.array([self.operate(p) for p in points.reshape(-1, points.shape[-1])])
                 single_stack = single_stack.reshape(result.shape)
-                _sc.check_operate_single_vs_batch_consistency(result, single_stack)
+                # Bound the scale of the terms accumulated by the affine dot
+                # product, including large operands that cancel to a small
+                # output.  Output magnitude alone cannot represent that error
+                # scale.
+                term_scale = (
+                    float(
+                        np.max(
+                            np.abs(affine_points) @ np.abs(self.affine_matrix).T
+                        )
+                    )
+                    if affine_points.size
+                    else 1.0
+                )
+                _sc.check_operate_single_vs_batch_consistency(
+                    result, single_stack, term_scale
+                )
             finally:
                 self._scibench_recall = False  # type: ignore[attr-defined]
         return result

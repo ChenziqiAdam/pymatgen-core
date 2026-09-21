@@ -335,7 +335,7 @@ def check_rotation_matrix_orthogonality(rotation_matrix):
 
 
 @_guard
-def check_operate_single_vs_batch_consistency(multi_result, single_stack):
+def check_operate_single_vs_batch_consistency(multi_result, single_stack, term_scale):
     """PM-OP-003: operate_multi(points)[i] == operate(points[i]) for every i.
 
     FIX (2026-09-17, round-1 triggerability): the original tolerance
@@ -353,10 +353,17 @@ def check_operate_single_vs_batch_consistency(multi_result, single_stack):
     triggering case (axis=[1,1,1], angle=180.001 deg,
     translation=[1e-9,1e-9,1e-9], magnitude ~1e4, batch size 10) is now
     silent, and isolated-sensitivity with a synthetic mismatch still fires.
+
+    FIX 2 (2026-09-21, fresh-agent evaluation): output-only scaling still
+    failed when O(1e4) affine terms canceled to an O(1e-6) result. The call
+    site now supplies the maximum absolute sum of affine terms, and the
+    tolerance scales with that pre-cancellation magnitude.
     """
     diff = np.abs(np.asarray(multi_result) - np.asarray(single_stack)).max()
-    magnitude = max(1.0, np.abs(np.asarray(multi_result)).max())
-    tol = 100.0 * eps64 * magnitude
+    # The two BLAS paths can accumulate the same affine dot product in a
+    # different order.  Scale against the absolute terms being summed, not
+    # only the possibly tiny result after rotation/translation cancellation.
+    tol = 100.0 * eps64 * max(1.0, term_scale)
     trigger_if(diff > tol, "PM-OP-003", diff=diff, tol=tol)
 
 
@@ -439,7 +446,9 @@ def check_density_mass_volume_consistency(density, mass_g, volume_cm3):
 
 
 @_guard
-def check_pbc_distance_image_consistency(dist, dist_recomputed, max_lattice_length, cond):
+def check_pbc_distance_image_consistency(
+    dist, dist_recomputed, max_lattice_length, cond, frac_operand_scale
+):
     """PM-STR-004: get_distance_and_image's returned dist matches the
     Cartesian distance recomputed from its own returned jimage.
 
@@ -473,11 +482,24 @@ def check_pbc_distance_image_consistency(dist, dist_recomputed, max_lattice_leng
     lattice is now excluded by the precondition (silent), and
     isolated-sensitivity with a synthetic mismatch on an ordinary
     (cond < 1e4) lattice still fires.
+
+    FIX 3 (2026-09-21, fresh-agent evaluation): equivalent-cell fractional
+    coordinates and jimages near 1e4 can cancel to a local O(1) displacement.
+    The tolerance now also scales with abs(jimage)+abs(f1)+abs(f2), which
+    captures the subtraction operands omitted by the prior two fixes.
     """
     if cond >= _LAT_COND_CEILING:
         return
     diff = abs(dist - dist_recomputed)
-    tol = 100.0 * eps64 * max(max_lattice_length, 1e-10)
+    # Forming jimage + f2 - f1 can cancel large, equivalent-cell fractional
+    # coordinates to a local displacement.  Include those operands in the
+    # absolute error scale before conversion by the lattice matrix.
+    tol = (
+        100.0
+        * eps64
+        * max(max_lattice_length, 1e-10)
+        * max(frac_operand_scale, 1.0)
+    )
     trigger_if(diff > tol, "PM-STR-004", diff=diff, tol=tol)
 
 
@@ -581,10 +603,20 @@ def check_ewald_eta_split_invariance(e1, e2, eta1, eta2, acc_factor, n_sites):
     array shape mismatch when the auto real-space cutoff collapses to zero
     neighbor shells) -- an existing library precondition boundary, not a
     checker concern; the checker never runs when construction raises.
+
+    FIX (2026-09-21, fresh-agent evaluation): acc_factor=16 showed that the
+    decimal convergence term had been extrapolated below float64's summation
+    floor; the derivation covered only 4, 8, and 10. The tolerance now takes
+    the maximum of that term and 1000*eps64*magnitude.
     """
     diff = abs(e1 - e2)
     magnitude = max(abs(e1), abs(e2), 1.0)
-    tol = 100.0 * (10.0 ** (-acc_factor)) * magnitude
+    # The convergence-digit contract cannot reduce float64 summation error
+    # below its machine-precision floor.  The original derivation only swept
+    # acc_factor <= 10 and extrapolated the decimal term below that floor.
+    truncation_tol = 100.0 * (10.0 ** (-acc_factor)) * magnitude
+    rounding_tol = 1000.0 * eps64 * magnitude
+    tol = max(truncation_tol, rounding_tol)
     trigger_if(diff > tol, "PM-EWALD-001", diff=diff, tol=tol,
                eta1=eta1, eta2=eta2, acc_factor=acc_factor, n_sites=n_sites)
 
