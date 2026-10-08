@@ -21,9 +21,11 @@ time.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import threading
+import warnings
 import numpy as np
 
 eps64 = np.finfo(np.float64).eps
@@ -73,6 +75,32 @@ def trigger_if(condition: bool, checker_id: str, **extra) -> None:
         trigger(checker_id, **extra)
 
 
+@contextlib.contextmanager
+def _quiet():
+    """Checker re-calls must not leak warnings or floating-point errors to user code.
+
+    The ignore filter is inserted into ``warnings.filters`` directly instead of
+    using ``catch_warnings``: the latter invalidates every module's
+    once-per-location warning registry, which would make production warnings
+    repeat after each checker call.
+    """
+    flt = ("ignore", None, Warning, None, 0)
+    warnings.filters.insert(0, flt)
+    try:
+        try:
+            import numpy as _np
+        except Exception:
+            yield
+        else:
+            with _np.errstate(all="ignore"):
+                yield
+    finally:
+        try:
+            warnings.filters.remove(flt)
+        except ValueError:
+            pass
+
+
 def _guard(func):
     """Wrap a checker body so it never raises and never re-enters itself."""
 
@@ -86,7 +114,8 @@ def _guard(func):
             return
         _active.names.add(name)
         try:
-            func(*args, **kwargs)
+            with _quiet():
+                func(*args, **kwargs)
         except Exception:
             pass
         finally:

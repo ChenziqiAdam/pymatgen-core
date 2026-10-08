@@ -2156,7 +2156,8 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
             return
         try:
             self._in_neighbor_oracle_check = True
-            old_result = self.get_all_neighbors_old(r, include_index=True, include_image=True)
+            with _sc._quiet():
+                old_result = self.get_all_neighbors_old(r, include_index=True, include_image=True)
         except Exception:
             return
         finally:
