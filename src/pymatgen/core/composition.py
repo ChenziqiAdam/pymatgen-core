@@ -323,9 +323,12 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
             for k, v in d2.items():
                 pooled[k] += v
             add_dict = result.get_el_amt_dict()
-            # constructor drops symbols with |amount| < amount_tolerance (allow_negative cancellation)
+            # the constructor drops every merged per-key amount with |amount| < amount_tolerance
+            # (documented storage filter, e.g. allow_negative cancellation); remove it from the pooled sum
             atol = type(self).amount_tolerance
-            pooled = {k: (0.0 if (k not in add_dict and abs(v) < atol) else v) for k, v in pooled.items()}
+            for key, val in new_el_map.items():
+                if abs(val) < atol:
+                    pooled[key.symbol] -= val
             all_keys = set(pooled) | set(add_dict)
             max_diff = max((abs(pooled.get(k, 0.0) - add_dict.get(k, 0.0)) for k in all_keys), default=0.0)
             max_amount = max([abs(v) for v in list(pooled.values()) + list(add_dict.values())] or [1.0])
@@ -667,11 +670,17 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
                 for e in self.elements:
                     by_symbol.setdefault(e.symbol, []).append(e)
                 total = 0.0
+                cancels = False
                 for group in by_symbol.values():
                     bare = [e for e in group if not isinstance(e, Species)]
                     members = bare[:1] if bare else group
+                    # a bare-Element aggregate nets opposite-signed Species amounts, while
+                    # _n_atoms sums |amount| per key: the partition law needs no cancellation
+                    if bare and len({self._data[e] > 0 for e in group}) > 1:
+                        cancels = True
                     total += sum(abs(self[e]) / self._n_atoms for e in members)
-                _sc.check_atomic_fraction_partition(total, len(self.elements))
+                if not cancels:
+                    _sc.check_atomic_fraction_partition(total, len(self.elements))
             finally:
                 self._scibench_recall = False  # type: ignore[attr-defined]
         return frac

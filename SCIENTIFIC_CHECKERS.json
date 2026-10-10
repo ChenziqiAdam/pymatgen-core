@@ -76,12 +76,12 @@
       "symbol": "reduced_formula"
     },
     {
-      "alarm": "abs(sum(fractions) - 1) exceeds 100*eps64*n_elements (n_elements = len(comp.elements))",
+      "alarm": "(when the precondition holds) abs(sum(fractions) - 1) exceeds 100*eps64*n_elements (n_elements = len(comp.elements))",
       "family": "atomic_fraction_partition",
       "id": "PM-COMP-002",
       "invariant": "sum over distinct element symbols of the atomic fraction == 1 within tolerance; get_atomic_fraction(Element) is the symbol aggregate (sums every Species of that symbol), so a bare Element key and a Species key of the same symbol are counted once",
       "observation_point": "inside get_atomic_fraction, a re-call sanitizer (guarded against recursion) sums the fraction with one term per distinct symbol (the aggregate if a bare Element key is present, else the per-Species terms) and compares to 1, the first time it is called for a composition",
-      "precondition": "any non-empty Composition (num_atoms > 0)",
+      "precondition": "any non-empty Composition (num_atoms > 0) in which no symbol mixes a bare Element key with Species keys of opposite sign (their signed aggregate would cancel while num_atoms sums |amount| per key)",
       "rationale": "atomic fractions are used directly in phase-diagram composition-space coordinates and in reporting stoichiometry to users; a partition violation would mean the reported fractions do not actually describe a valid decomposition of the whole composition, for example when a composition mixes oxidation-state-labeled and unlabeled entries for the same element",
       "scientific_quantity": "atomic fractions of all elements in a composition, which must partition the whole (sum to exactly 1)",
       "source": "pymatgen/core/composition.py",
@@ -100,10 +100,10 @@
       "symbol": "as_weight_dict"
     },
     {
-      "alarm": "any symbol's amount differing by more than 100*eps64*max(amounts), after treating pooled symbols below amount_tolerance that the result dropped as 0",
+      "alarm": "any symbol's amount differing by more than 100*eps64*max(amounts), after removing the per-key amounts below amount_tolerance that the constructor drops",
       "family": "composition_addition_symbol_pooling_consistency",
       "id": "PM-COMP-004",
-      "invariant": "(c1+c2).get_el_amt_dict() equals the dict obtained by independently pooling c1.get_el_amt_dict() and c2.get_el_amt_dict() key-by-key; a pooled symbol whose |amount| is below Composition.amount_tolerance and which the constructor dropped (allow_negative cancellation residue) is treated as 0",
+      "invariant": "(c1+c2).get_el_amt_dict() equals the dict obtained by independently pooling c1.get_el_amt_dict() and c2.get_el_amt_dict() key-by-key; a merged per-key amount with |amount| below Composition.amount_tolerance, which the constructor drops by design (e.g. allow_negative cancellation residue), is removed from the pooled sum",
       "observation_point": "inside __add__, a re-call sanitizer independently pools both operands' get_el_amt_dict() and compares to the result's own get_el_amt_dict()",
       "precondition": "any two compositions c1, c2 with matching allow_negative",
       "rationale": "Composition.__add__ is the primary mechanism for combining reaction products/reactants and for building up compositions programmatically; a species/symbol pooling inconsistency would most plausibly indicate a bug in how oxidation-state-labeled species are merged when their labels differ but their underlying element is the same, silently under- or over-counting an element's total amount",
@@ -232,7 +232,7 @@
       "symbol": "get_decomp_and_e_above_hull"
     },
     {
-      "alarm": "abs(sum-1) exceeds 100*eps64*(dim+1), or any amount < -10*PhaseDiagram.numerical_tol",
+      "alarm": "abs(sum-1) exceeds 100*eps64*(dim+1)*max(1, cond) (cond = 2-norm condition number of the facet simplex's augmented vertex matrix, from which the barycentric coordinates are solved), or any amount < -10*PhaseDiagram.numerical_tol",
       "family": "decomposition_convex_combination",
       "id": "PM-PD-002",
       "invariant": "sum(get_decomposition(comp).values()) is close to 1, and every value is >= -tol",
@@ -244,12 +244,12 @@
       "symbol": "get_decomposition"
     },
     {
-      "alarm": "any element's amount differing by more than 100*eps64*(dim+1) between the reconstructed and original fractional composition",
+      "alarm": "any element's amount differing by more than 100*eps64*(dim+1)*max(1, cond) + Composition.amount_tolerance (cond as in PM-PD-002) between the reconstructed and original fractional composition",
       "family": "decomposition_mass_conservation",
       "id": "PM-PD-003",
       "invariant": "sum(amt * entry.composition.fractional_composition for entry, amt in get_decomposition(comp).items()) is close to comp.fractional_composition",
       "observation_point": "inside get_decomposition, alongside PM-PD-002, reconstructing the weighted composition sum",
-      "precondition": "same as PM-PD-002, on the composition's fractional form",
+      "precondition": "same as PM-PD-002, on the composition's fractional form; the target fractional composition is stored at Composition.amount_tolerance resolution (components below it are dropped by the constructor)",
       "rationale": "this is the property that makes a 'decomposition' chemically meaningful at all; a facet/amount misalignment bug would silently report a chemically inconsistent reaction while both individual amounts and their sum-to-1 property (PM-PD-002) looked entirely correct -- an independent cross-check from PM-PD-002, since it additionally depends on the facet vertices being correctly indexed and aligned with the barycentric coordinates",
       "scientific_quantity": "decomposition amounts weighted by the facet vertex entries' own compositions, which must recombine to the original composition (the mass-conservation law underlying any phase decomposition)",
       "source": "pymatgen/analysis/phase_diagram.py",
@@ -304,7 +304,7 @@
       "symbol": "SpacegroupAnalyzer.get_symmetry_operations"
     },
     {
-      "alarm": "abs(trace(T)-trace(T_rot)) exceeds 100*(eps64*scale + scale*max(ortho_err,eps64)), or the analogous eigenvalue-max-deviation bound, where ortho_err is R's own measured (R@R.T-I) max deviation",
+      "alarm": "abs(trace(T)-trace(T_rot)) exceeds 100*(eps64*scale + scale*max(ortho_err,eps64)), where scale = max(1, |trace|, max|T|), or the analogous eigenvalue-max-deviation bound (scale = max(1, max|eig|, max|T|)), where ortho_err is R's own measured (R@R.T-I) max deviation",
       "family": "tensor_rotation_trace_eigenvalue_invariance",
       "id": "PM-TENS-001",
       "invariant": "trace(tensor.rotate(R)) is close to trace(tensor), and sorted(eigvalsh(tensor.rotate(R))) is close to sorted(eigvalsh(tensor)), for any R accepted by rotate's own precondition",
@@ -367,9 +367,9 @@
       "alarm": "max(abs(mod1(returned_frac - expected_frac))) exceeds 100*eps64*max(1,magnitude), where mod1(d) = d - round(d) and magnitude = max(1, max|start_coords|, max|end_coords|)",
       "family": "interpolation_endpoint_reproduction",
       "id": "PM-STR-007",
-      "invariant": "when the amplitudes contain 0, interpolate(...)[0].frac_coords equals self.frac_coords; when end_amplitude == 1 and the amplitudes contain it, interpolate(...)[-1].frac_coords equals end_structure.frac_coords; both comparisons MODULO AN INTEGER LATTICE TRANSLATION (see deviation note)",
+      "invariant": "when the amplitudes contain 0, interpolate(...)[0].frac_coords equals self.frac_coords; when the last amplitude x has x*end_amplitude == 1, interpolate(...)[-1].frac_coords equals end_structure.frac_coords; both comparisons MODULO AN INTEGER LATTICE TRANSLATION (see deviation note)",
       "observation_point": "inside interpolate, after all images are constructed, comparing the first and last returned structures' fractional coordinates against self and end_structure",
-      "precondition": "any two Structures interpolate accepts without raising (equal length, matching per-site species), any nimages (integer or explicit list), any pbc/autosort_tol/interpolate_lattices combination, end_amplitude == 1 for the end-structure comparison (the x=1 image only equals end_structure itself when end_amplitude == 1; other end_amplitude values interpolate to a different, non-end_structure target by design and are outside this law's precondition for the end check, though the x=0 start check applies regardless of end_amplitude); the start comparison applies only when the amplitude list contains 0 (an explicit list such as [0.25, 0.5, 0.75] has no x=0 image)",
+      "precondition": "any two Structures interpolate accepts without raising (equal length, matching per-site species), any nimages (integer or explicit list), any pbc/autosort_tol/interpolate_lattices combination, the end-structure comparison applies only when the last amplitude x satisfies x*end_amplitude == 1 (the image equals end_structure only then; any other total amplitude interpolates to a different target by design), while the x=0 start check applies regardless of end_amplitude; the start comparison applies only when the amplitude list contains 0 (an explicit list such as [0.25, 0.5, 0.75] has no x=0 image)",
       "rationale": "interpolate is the standard construction path for NEB (nudged elastic band) reaction-pathway inputs; NEB calculations explicitly assume the first and last images ARE the reactant and product structures unmodified. A silent endpoint discrepancy (most plausibly from the autosort_tol site-matching permutation) would mean a downstream NEB calculation silently starts or ends at a slightly different structure than the one the user specified.",
       "scientific_quantity": "interpolate's x=0 and x=1 boundary images, the two endpoints of the one-parameter affine family in x it constructs, which must exactly reproduce the start and end structures (the family must pass through the two points it interpolates between)",
       "source": "pymatgen/core/structure.py",

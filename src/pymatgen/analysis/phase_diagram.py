@@ -769,7 +769,8 @@ class PhaseDiagram(MSONable):
         }
         if _sc.enabled():
             _sc.check_decomposition_convex_combination(
-                sum(decomp_amts), min(decomp_amts), self.dim, PhaseDiagram.numerical_tol
+                sum(decomp_amts), min(decomp_amts), self.dim, PhaseDiagram.numerical_tol,
+                _sc.safe_cond(simplex._aug) if hasattr(simplex, "_aug") else 1.0,
             )
             recon: dict = {}
             for f, amt in zip(facet, decomp_amts, strict=True):
@@ -782,7 +783,12 @@ class PhaseDiagram(MSONable):
                 (abs(recon.get(el, 0.0) - target.get(el, 0.0)) for el in all_els),
                 default=0.0,
             )
-            _sc.check_decomposition_mass_conservation(max_diff, self.dim)
+            _sc.check_decomposition_mass_conservation(
+                max_diff,
+                self.dim,
+                _sc.safe_cond(simplex._aug) if hasattr(simplex, "_aug") else 1.0,
+                Composition.amount_tolerance,
+            )
         return result
 
     def get_decomp_and_hull_energy_per_atom(self, comp: Composition) -> tuple[dict[Entry, float], float]:

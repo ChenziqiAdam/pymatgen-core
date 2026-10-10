@@ -143,7 +143,7 @@ class Tensor(np.ndarray, MSONable):
                 R = np.asarray(matrix)
                 ortho_err = np.abs(R @ R.T - np.eye(3)).max()
                 _sc.check_tensor_rotation_trace_eigenvalue_invariance(
-                    trace0, trace1, eig0, eig1, ortho_err
+                    trace0, trace1, eig0, eig1, ortho_err, float(np.abs(arr0).max())
                 )
             except Exception:
                 pass

@@ -588,7 +588,7 @@ def check_convex_hull_energy_non_negativity(e_above_hull, numerical_tol):
 
 
 @_guard
-def check_decomposition_convex_combination(amount_sum, min_amount, dim, numerical_tol):
+def check_decomposition_convex_combination(amount_sum, min_amount, dim, numerical_tol, cond=1.0):
     """PM-PD-002: decomposition amounts sum to 1 and are all non-negative.
 
     6-composition sweep on the Fe-O phase diagram: worst |sum-1| observed
@@ -616,7 +616,9 @@ def check_decomposition_convex_combination(amount_sum, min_amount, dim, numerica
     quaternary Li-Fe-P-O near-vertex composition is now silent, and
     isolated-sensitivity with a synthetic mismatch still fires.
     """
-    sum_tol = 100.0 * eps64 * (dim + 1)
+    # barycentric coordinates come from a linear solve with the facet's
+    # augmented vertex matrix: rounding error scales with eps64 * cond.
+    sum_tol = 100.0 * eps64 * (dim + 1) * max(cond, 1.0)
     neg_tol = 10.0 * abs(numerical_tol)
     trigger_if(abs(amount_sum - 1.0) > sum_tol, "PM-PD-002",
                family="sum_to_one", amount_sum=amount_sum, tol=sum_tol)
@@ -625,14 +627,18 @@ def check_decomposition_convex_combination(amount_sum, min_amount, dim, numerica
 
 
 @_guard
-def check_decomposition_mass_conservation(max_element_diff, dim):
+def check_decomposition_mass_conservation(max_element_diff, dim, cond=1.0, amount_tolerance=0.0):
     """PM-PD-003: decomposition amounts weighted by facet-entry compositions
     reconstruct the original (fractional) composition.
 
     Same 6-composition sweep: worst observed max element-wise diff was
-    1.1e-16 (essentially exact). Tolerance set to 100x*eps64*(dim+1).
+    1.1e-16 (essentially exact). Tolerance set to 100x*eps64*(dim+1),
+    scaled by max(1, cond) of the facet matrix (the amounts come from a
+    linear solve), plus Composition.amount_tolerance: the target fractional
+    composition is stored at that resolution (components below it are
+    dropped by the constructor), so deviations below it are not detectable.
     """
-    tol = 100.0 * eps64 * (dim + 1)
+    tol = 100.0 * eps64 * (dim + 1) * max(cond, 1.0) + amount_tolerance
     trigger_if(max_element_diff > tol, "PM-PD-003", diff=max_element_diff, tol=tol)
 
 
@@ -776,7 +782,7 @@ def check_periodic_symmop_atom_correspondence(max_residual, symprec, n_ops, n_si
 # ---------------------------------------------------------------------------
 
 @_guard
-def check_tensor_rotation_trace_eigenvalue_invariance(trace0, trace1, eig0, eig1, ortho_err=0.0):
+def check_tensor_rotation_trace_eigenvalue_invariance(trace0, trace1, eig0, eig1, ortho_err=0.0, tensor_norm=0.0):
     """PM-TENS-001: trace and (sorted) eigenvalues of a rank-2 tensor are
     invariant under a proper rotation applied via Tensor.rotate.
 
@@ -822,14 +828,18 @@ def check_tensor_rotation_trace_eigenvalue_invariance(trace0, trace1, eig0, eig1
     silent, the full test_tensors.py suite is silent, and isolated-
     sensitivity with a synthetic mismatch (ortho_err=0, i.e. the ordinary
     exact-rotation precondition) still fires.
+
+    Rounding in R T R^T is relative to the tensor's largest element, not to
+    its trace or eigenvalues (both vanish for a traceless/antisymmetric
+    tensor), so ``tensor_norm`` = max|T| also enters the scale.
     """
     diff_tr = abs(trace0 - trace1)
-    tr_scale = max(abs(trace0), 1.0)
+    tr_scale = max(abs(trace0), tensor_norm, 1.0)
     tol_tr = 100.0 * (eps64 * tr_scale + tr_scale * max(ortho_err, eps64))
     e0 = np.sort(np.asarray(eig0))
     e1 = np.sort(np.asarray(eig1))
     diff_eig = np.abs(e0 - e1).max() if e0.size else 0.0
-    eig_scale = max(np.abs(e0).max() if e0.size else 1.0, 1.0)
+    eig_scale = max(np.abs(e0).max() if e0.size else 1.0, tensor_norm, 1.0)
     tol_eig = 100.0 * (eps64 * eig_scale + eig_scale * max(ortho_err, eps64))
     trigger_if(diff_tr > tol_tr, "PM-TENS-001", family="trace",
                diff=diff_tr, tol=tol_tr)

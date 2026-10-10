@@ -2663,7 +2663,8 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
 
             first_diff = float(np.max(np.abs(_mod1(structs[0].frac_coords - start_coords))))
             has_start = bool(images_arr.size and abs(float(images_arr[0])) < 1e-12)
-            has_end = bool(images_arr.size and abs(float(images_arr[-1]) - end_amplitude) < 1e-12)
+            # the end structure is reproduced only when the total amplitude x * end_amplitude is 1
+            has_end = bool(images_arr.size and abs(float(images_arr[-1]) * end_amplitude - 1.0) < 1e-12)
             end_diff = 0.0
             if has_end:
                 end_diff = float(np.max(np.abs(_mod1(structs[-1].frac_coords - end_coords))))
