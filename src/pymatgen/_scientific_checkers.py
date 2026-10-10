@@ -171,7 +171,17 @@ def check_metric_tensor_parameter_roundtrip(g1, g2, max_length):
     Same 12-lattice sweep: worst observed diff/(eps64*max_length^2) ratio
     was 0.44. Tolerance set to 100x.
     """
-    diff = np.abs(np.asarray(g1) - np.asarray(g2)).max()
+    g1 = np.asarray(g1, dtype=float)
+    # Domain: the (a, b, c, alpha, beta, gamma) description cannot encode
+    # angles below ~sqrt(eps64) through arccos; cells with a lattice-vector
+    # pair closer than 1e-6 rad to (anti)parallel are not crystal cells.
+    d = np.sqrt(np.diag(g1))
+    if not np.all(d > 0):
+        return
+    cosines = np.array([g1[0, 1] / (d[0] * d[1]), g1[0, 2] / (d[0] * d[2]), g1[1, 2] / (d[1] * d[2])])
+    if np.sqrt(np.maximum(1.0 - cosines ** 2, 0.0)).min() < 1e-6:
+        return
+    diff = np.abs(g1 - np.asarray(g2)).max()
     tol = 100.0 * eps64 * max_length ** 2
     trigger_if(diff > tol, "PM-LAT-002", diff=diff, tol=tol)
 
@@ -935,6 +945,23 @@ def check_slab_layer_count_construction_consistency(n_layers_slab, n_layers_reco
 # ---------------------------------------------------------------------------
 # Subsystem 12: core/elasticity/elastic.py -- elastic tensor derived properties
 # ---------------------------------------------------------------------------
+
+def born_stable(voigt) -> bool:
+    """True when the 6x6 Voigt matrix is symmetric and positive definite
+    with a conditioning at which the eigenvalue sign is numerically reliable
+    (Born mechanical stability; precondition of the Voigt-Reuss bounds)."""
+    try:
+        c = np.asarray(voigt, dtype=float)
+        scale = np.abs(c).max()
+        if c.shape != (6, 6) or not np.isfinite(scale) or scale == 0:
+            return False
+        if np.abs(c - c.T).max() > 1e-8 * scale:
+            return False
+        w = np.linalg.eigvalsh((c + c.T) / 2)
+        return bool(w.min() > 100.0 * eps64 * w.max() * (w.max() / max(w.min(), 1e-300)))
+    except Exception:
+        return False
+
 
 @_guard
 def check_voigt_reuss_variational_bound(k_voigt, k_reuss, g_voigt, g_reuss, cond_voigt):

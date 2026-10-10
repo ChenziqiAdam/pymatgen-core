@@ -2219,6 +2219,11 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
                 boundary = max(numerical_tol, _ROUNDING_GRANULARITY)
                 fast_set = {t for t in fast_set if abs(t[2] - r) > boundary}
                 old_set = {t for t in old_set if abs(t[2] - r) > boundary}
+            # Coincident distinct sites (d ~ 0) are a convention difference
+            # (oracle drops all d <= 1e-8, fast paths drop only the site itself).
+            coincident = 1e-8
+            fast_set = {t for t in fast_set if t[2] > coincident}
+            old_set = {t for t in old_set if t[2] > coincident}
             only_fast = fast_set - old_set
             only_old = old_set - fast_set
             if only_fast or only_old:

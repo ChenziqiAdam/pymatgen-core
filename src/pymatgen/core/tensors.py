@@ -138,8 +138,8 @@ class Tensor(np.ndarray, MSONable):
                 arr0 = np.asarray(self)
                 arr1 = np.asarray(result)
                 trace0, trace1 = np.trace(arr0), np.trace(arr1)
-                eig0 = np.linalg.eigvalsh((arr0 + arr0.T) / 2)
-                eig1 = np.linalg.eigvalsh((arr1 + arr1.T) / 2)
+                eig0 = np.linalg.eigvalsh((arr0 + arr0.conj().T) / 2)
+                eig1 = np.linalg.eigvalsh((arr1 + arr1.conj().T) / 2)
                 R = np.asarray(matrix)
                 ortho_err = np.abs(R @ R.T - np.eye(3)).max()
                 _sc.check_tensor_rotation_trace_eigenvalue_invariance(

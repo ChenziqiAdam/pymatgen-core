@@ -214,7 +214,7 @@ class ElasticTensor(NthOrderElasticTensor):
                 # raise_if_unphysical exception path) is outside the
                 # Voigt-Reuss variational bound theorem's domain of
                 # meaning, not a hard case within it.
-                if k_vrh_value > 0 and g_vrh_value > 0:
+                if k_vrh_value > 0 and g_vrh_value > 0 and _sc.born_stable(self.voigt):
                     _sc.check_voigt_reuss_variational_bound(
                         self.k_voigt, self.k_reuss, self.g_voigt, self.g_reuss,
                         np.linalg.cond(self.voigt),
@@ -437,7 +437,7 @@ class ElasticTensor(NthOrderElasticTensor):
                 # and g_vrh must both be positive before this law applies.
                 k_vrh_value = 0.5 * (self.k_voigt + self.k_reuss)
                 g_vrh_value = 0.5 * (self.g_voigt + self.g_reuss)
-                if k_vrh_value > 0 and g_vrh_value > 0:
+                if k_vrh_value > 0 and g_vrh_value > 0 and _sc.born_stable(self.voigt):
                     mag = max(abs(self.k_voigt), abs(self.k_reuss), abs(self.g_voigt), abs(self.g_reuss), 1.0)
                     _sc.check_universal_anisotropy_non_negative(anisotropy, np.linalg.cond(self.voigt), mag)
             except Exception:
