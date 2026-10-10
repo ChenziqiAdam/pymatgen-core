@@ -28,7 +28,7 @@
       "symbol": "metric_tensor"
     },
     {
-      "alarm": "abs(vol_before - vol_after) exceeds 100*eps64*vol_before",
+      "alarm": "abs(vol_before - vol_after) exceeds 100*eps64*vol_before*max(1, cond(L)), where cond(L) is the 2-norm condition number of the input lattice matrix",
       "family": "lll_reduction_volume_invariance",
       "id": "PM-LAT-003",
       "invariant": "abs(lat.get_lll_reduced_lattice().volume - lat.volume) < tol",
@@ -76,13 +76,13 @@
       "symbol": "reduced_formula"
     },
     {
-      "alarm": "abs(sum(fractions) - 1) exceeds 100*eps64*n_elements",
+      "alarm": "abs(sum(fractions) - 1) exceeds 100*eps64*n_elements (n_elements = len(comp.elements))",
       "family": "atomic_fraction_partition",
       "id": "PM-COMP-002",
-      "invariant": "sum(comp.get_atomic_fraction(el) for el in comp.elements) == 1 within tolerance",
-      "observation_point": "inside get_atomic_fraction, a re-call sanitizer (guarded against recursion) sums the fraction over all elements and compares to 1, the first time it is called for a composition",
+      "invariant": "sum over distinct element symbols of the atomic fraction == 1 within tolerance; get_atomic_fraction(Element) is the symbol aggregate (sums every Species of that symbol), so a bare Element key and a Species key of the same symbol are counted once",
+      "observation_point": "inside get_atomic_fraction, a re-call sanitizer (guarded against recursion) sums the fraction with one term per distinct symbol (the aggregate if a bare Element key is present, else the per-Species terms) and compares to 1, the first time it is called for a composition",
       "precondition": "any non-empty Composition (num_atoms > 0)",
-      "rationale": "atomic fractions are used directly in phase-diagram composition-space coordinates and in reporting stoichiometry to users; a partition violation would mean the reported fractions do not actually describe a valid decomposition of the whole composition, most plausibly from a Species/Element key-aliasing bug when a composition mixes oxidation-state-labeled and unlabeled entries for the same element",
+      "rationale": "atomic fractions are used directly in phase-diagram composition-space coordinates and in reporting stoichiometry to users; a partition violation would mean the reported fractions do not actually describe a valid decomposition of the whole composition, for example when a composition mixes oxidation-state-labeled and unlabeled entries for the same element",
       "scientific_quantity": "atomic fractions of all elements in a composition, which must partition the whole (sum to exactly 1)",
       "source": "pymatgen/core/composition.py",
       "symbol": "get_atomic_fraction"
@@ -100,10 +100,10 @@
       "symbol": "as_weight_dict"
     },
     {
-      "alarm": "any symbol's amount differing by more than 100*eps64*max(amounts)",
+      "alarm": "any symbol's amount differing by more than 100*eps64*max(amounts), after treating pooled symbols below amount_tolerance that the result dropped as 0",
       "family": "composition_addition_symbol_pooling_consistency",
       "id": "PM-COMP-004",
-      "invariant": "(c1+c2).get_el_amt_dict() equals the dict obtained by independently pooling c1.get_el_amt_dict() and c2.get_el_amt_dict() key-by-key",
+      "invariant": "(c1+c2).get_el_amt_dict() equals the dict obtained by independently pooling c1.get_el_amt_dict() and c2.get_el_amt_dict() key-by-key; a pooled symbol whose |amount| is below Composition.amount_tolerance and which the constructor dropped (allow_negative cancellation residue) is treated as 0",
       "observation_point": "inside __add__, a re-call sanitizer independently pools both operands' get_el_amt_dict() and compares to the result's own get_el_amt_dict()",
       "precondition": "any two compositions c1, c2 with matching allow_negative",
       "rationale": "Composition.__add__ is the primary mechanism for combining reaction products/reactants and for building up compositions programmatically; a species/symbol pooling inconsistency would most plausibly indicate a bug in how oxidation-state-labeled species are merged when their labels differ but their underlying element is the same, silently under- or over-counting an element's total amount",
@@ -184,7 +184,7 @@
       "symbol": "make_supercell"
     },
     {
-      "alarm": "abs(supercell.volume - original.volume*abs(det(M))) exceeds 100*eps64*original.volume*abs(det(M))",
+      "alarm": "abs(supercell.volume - original.volume*abs(det(M))) exceeds 100*eps64*original.volume*abs(det(M))*max(1, cond), where cond is the larger 2-norm condition number of the original and supercell lattice matrices",
       "family": "supercell_volume_determinant_scaling",
       "id": "PM-STR-002",
       "invariant": "struct.make_supercell(M).volume is close to struct.volume * abs(det(M))",
@@ -332,7 +332,7 @@
       "family": "slab_layer_count_construction_consistency",
       "id": "PM-SURF-002",
       "invariant": "n_layers_slab (the construction-time sizing value) equals round(atom_c_span * n_layers_total) + 1 (the atom-span recomputation, with a +1 fencepost correction since n_layers_slab atomic layers span n_layers_slab-1 inter-layer gaps between the first and last atom)",
-      "observation_point": "at the end of get_slab, before Slab construction, comparing the construction-time n_layers_slab against the atom-span recomputation on the just-built structure",
+      "observation_point": "at the end of get_slab, before Slab construction, comparing the construction-time n_layers_slab against the atom-span recomputation evaluated on the slab as stacked (the structure captured before the optional lll_reduce basis change, identical to the final structure when lll_reduce=False), since after LLL the c vector is no longer the stacking vector",
       "precondition": "any Slab constructed via SlabGenerator.get_slab with primitive=False (primitive-cell reduction can change the effective layer count in a way not modeled by either formula), AND the oriented unit cell must have exactly one distinct atomic c-fractional layer (confirmed empirically: low-symmetry Miller indices like (2,1,0)/(2,1,1) can place more than one atomic layer per oriented-unit-cell repeat, breaking the 'one repeat == one layer' assumption both formulas share) -- checked at the observation point, not assumed a priori",
       "rationale": "min_slab_size/min_vac_size are the primary user-facing controls for slab thickness in surface-science workflows (surface energy convergence studies explicitly vary these); a discrepancy between the requested/computed layer count and what was actually built would mean a convergence study silently uses a different slab thickness than the one it believes it is comparing against",
       "scientific_quantity": "the number of atomic layers in a constructed slab, computed two ways: (1) a top-down sizing formula at construction time (n_layers_slab, from min_slab_size/height or min_slab_size/height_per_layer depending on in_unit_planes), and (2) a bottom-up post-construction measurement of where the atoms actually ended up (the c-fractional-coordinate span between the lowest and highest atomic layer, times the total layer count) -- the same measurement Slab.get_tasker2_slabs already performs internally for its own, unrelated purpose",
@@ -367,9 +367,9 @@
       "alarm": "max(abs(mod1(returned_frac - expected_frac))) exceeds 100*eps64*max(1,magnitude), where mod1(d) = d - round(d) and magnitude = max(1, max|start_coords|, max|end_coords|)",
       "family": "interpolation_endpoint_reproduction",
       "id": "PM-STR-007",
-      "invariant": "interpolate(...)[0].frac_coords equals self.frac_coords, and interpolate(...)[-1].frac_coords equals end_structure.frac_coords, both MODULO AN INTEGER LATTICE TRANSLATION (see deviation note)",
+      "invariant": "when the amplitudes contain 0, interpolate(...)[0].frac_coords equals self.frac_coords; when end_amplitude == 1 and the amplitudes contain it, interpolate(...)[-1].frac_coords equals end_structure.frac_coords; both comparisons MODULO AN INTEGER LATTICE TRANSLATION (see deviation note)",
       "observation_point": "inside interpolate, after all images are constructed, comparing the first and last returned structures' fractional coordinates against self and end_structure",
-      "precondition": "any two Structures interpolate accepts without raising (equal length, matching per-site species), any nimages (integer or explicit list), any pbc/autosort_tol/interpolate_lattices combination, end_amplitude == 1 for the end-structure comparison (the x=1 image only equals end_structure itself when end_amplitude == 1; other end_amplitude values interpolate to a different, non-end_structure target by design and are outside this law's precondition for the end check, though the x=0 start check applies regardless of end_amplitude)",
+      "precondition": "any two Structures interpolate accepts without raising (equal length, matching per-site species), any nimages (integer or explicit list), any pbc/autosort_tol/interpolate_lattices combination, end_amplitude == 1 for the end-structure comparison (the x=1 image only equals end_structure itself when end_amplitude == 1; other end_amplitude values interpolate to a different, non-end_structure target by design and are outside this law's precondition for the end check, though the x=0 start check applies regardless of end_amplitude); the start comparison applies only when the amplitude list contains 0 (an explicit list such as [0.25, 0.5, 0.75] has no x=0 image)",
       "rationale": "interpolate is the standard construction path for NEB (nudged elastic band) reaction-pathway inputs; NEB calculations explicitly assume the first and last images ARE the reactant and product structures unmodified. A silent endpoint discrepancy (most plausibly from the autosort_tol site-matching permutation) would mean a downstream NEB calculation silently starts or ends at a slightly different structure than the one the user specified.",
       "scientific_quantity": "interpolate's x=0 and x=1 boundary images, the two endpoints of the one-parameter affine family in x it constructs, which must exactly reproduce the start and end structures (the family must pass through the two points it interpolates between)",
       "source": "pymatgen/core/structure.py",
@@ -400,12 +400,12 @@
       "symbol": "Composition.oxi_state_guesses"
     },
     {
-      "alarm": "orbit_size <= 0 or len(symmetry_operations) % orbit_size != 0 (tol=0, exact integer divisibility per SANITIZER.md 5.8 X)",
+      "alarm": "orbit_size <= 0 or len(symmetry_operations) % orbit_size != 0 (tol=0, exact integer divisibility per SANITIZER.md 5.8 X), evaluated only when the image-separation precondition holds; coincident (<=0.1*site_tolerance) and well-separated (>=10*site_tolerance) images keep the exact check",
       "family": "symmetry_orbit_stabilizer_divisibility",
       "id": "PM-CIF-001",
       "invariant": "len(self.symmetry_operations) % len(orbit_of_this_coordinate) == 0, where orbit_of_this_coordinate is computed independently per input coordinate (deduplicated only among that one coordinate's own symmetry images, not against the cross-coordinate coords_out accumulator _unique_coords itself uses for its output)",
       "observation_point": "at the end of _unique_coords's per-input-coordinate inner loop (both the magmoms and non-magmoms branches), counting how many of len(self.symmetry_operations) operations produced a distinct point for that one coordinate",
-      "precondition": "any CIF whose parsed symmetry_operations genuinely form a closed group under composition (a check of the orbit-expansion arithmetic given whatever operation list self.symmetry_operations already holds, not of whether the parser correctly extracted a complete operation list from the CIF text); any starting coordinate the CIF's _atom_site_* loop supplies",
+      "precondition": "any CIF whose parsed symmetry_operations genuinely form a closed group under composition (a check of the orbit-expansion arithmetic given whatever operation list self.symmetry_operations already holds, not of whether the parser correctly extracted a complete operation list from the CIF text); any starting coordinate the CIF's _atom_site_* loop supplies, provided its symmetry images are unambiguous under the parser's site_tolerance: the check is skipped when any two of the coordinate's operation images are separated (periodic, per-component maximum) by more than 0.1*site_tolerance and less than 10*site_tolerance, the band in which the greedy tolerance-based deduplication is non-transitive (coordinate within ~site_tolerance of a symmetry element)",
       "rationale": "this is a purely internal consistency property of pymatgen's own orbit-construction arithmetic against the operation list it was itself handed; a violation would indicate either a bug in _unique_coords's deduplication (_site_tolerance too loose or too tight) or a symmetry_operations list that is not actually a closed group, either of which would silently produce a structure with the wrong site count, corrupting composition, density, and every downstream analysis of any structure parsed from that CIF",
       "scientific_quantity": "the size of the symmetry-equivalent orbit _unique_coords expands from a single asymmetric-unit coordinate under the CIF's parsed symmetry operations, which by the orbit-stabilizer theorem must evenly divide the number of parsed symmetry operations (len(orbit) = |G|/|stabilizer|)",
       "source": "pymatgen/io/cif.py",

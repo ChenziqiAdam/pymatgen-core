@@ -62,6 +62,16 @@ def trigger(checker_id: str, **extra) -> None:
         pass
 
 
+def safe_cond(matrix) -> float:
+    """2-norm condition number of ``matrix``; 1.0 if it cannot be computed
+    (never raises, so call-site hooks stay non-disruptive)."""
+    try:
+        c = float(np.linalg.cond(np.asarray(matrix, dtype=float)))
+        return c if c == c else 1.0
+    except Exception:
+        return 1.0
+
+
 def _jsonable(v):
     if isinstance(v, (np.floating, np.integer)):
         return v.item()
@@ -167,13 +177,22 @@ def check_metric_tensor_parameter_roundtrip(g1, g2, max_length):
 
 
 @_guard
-def check_lll_volume_invariance(vol_before, vol_after):
+def check_lll_volume_invariance(vol_before, vol_after, cond=1.0):
     """PM-LAT-003: LLL reduction preserves lattice volume exactly (up to rounding).
 
     Same 12-lattice sweep: worst observed diff/(eps64*vol) ratio was 0.64.
     Tolerance set to 100x.
+
+    REPAIR 2026-10-09: the float LLL + det rounding error grows with the
+    conditioning of the lattice matrix (sheared / nearly parallel cells):
+    596-cell sweep (shear 1..1e6, near-parallel sep 1e-8..1e-1, cond up to
+    ~1e12) gave worst diff/(eps64*vol*cond) = 0.26, while diff/(eps64*vol)
+    reached 1e10. Tolerance is now 100*eps64*vol*max(1, cond(L)) (>=380x
+    headroom over the worst observed ratio; well-conditioned cells keep the
+    original ~100 eps64 sensitivity). ``cond`` defaults to 1.0 (old rule).
     """
-    tol = 100.0 * eps64 * abs(vol_before)
+    cond = cond if (cond == cond and cond >= 1.0) else 1.0
+    tol = 100.0 * eps64 * abs(vol_before) * cond
     diff = abs(vol_before - vol_after)
     trigger_if(diff > tol, "PM-LAT-003", diff=diff, tol=tol)
 
@@ -277,6 +296,14 @@ def check_atomic_fraction_partition(fraction_sum, n_elements):
     10-composition sweep (including mixed Element/Species-keyed
     compositions): worst observed diff/(eps64*n_elements) ratio was 0.
     Tolerance set to 100x*eps64*n_elements for headroom.
+
+    REPAIR 2026-10-09: ``get_atomic_fraction(Element)`` is the documented
+    symbol aggregate (Composition.__getitem__ sums every Species of that
+    symbol), so the partition law holds over DISTINCT SYMBOLS, not over a
+    key set containing both a bare Element and a Species of the same symbol
+    (that double counts, e.g. {Fe:1, Fe3+:2, O2-:4} summed to 9/7). The call
+    site now builds one term per symbol (the aggregate if a bare Element key
+    is present, else the per-Species terms); n_elements is unchanged.
     """
     diff = abs(fraction_sum - 1.0)
     tol = 100.0 * eps64 * max(n_elements, 1)
@@ -446,15 +473,24 @@ def check_supercell_site_count_conservation(n_before, n_after, det_m):
 
 
 @_guard
-def check_supercell_volume_determinant_scaling(vol_before, vol_after, det_m):
+def check_supercell_volume_determinant_scaling(vol_before, vol_after, det_m, cond=1.0):
     """PM-STR-002: supercell.volume == original.volume * abs(det(M)).
 
     Same 5-matrix sweep: worst observed diff/(eps64*vol*|det|) ratio was
     1.28. Tolerance set to 100x.
+
+    REPAIR 2026-10-09: M @ lattice and the two det() evaluations carry a
+    rounding error that scales with the conditioning of the (original and
+    supercell) lattice matrices. 596-cell sweep of sheared / nearly parallel
+    lattices with a non-diagonal M: worst diff/(eps64*vol*cond) = 0.46, while
+    diff/(eps64*vol) reached ~5e15. Tolerance is now
+    100*eps64*vol*|det|*max(1, cond) with ``cond`` the larger of the two
+    lattice condition numbers (>=200x headroom; default 1.0 = old rule).
     """
+    cond = cond if (cond == cond and cond >= 1.0) else 1.0
     expect = vol_before * abs(det_m)
     diff = abs(vol_after - expect)
-    tol = 100.0 * eps64 * max(abs(expect), 1e-10)
+    tol = 100.0 * eps64 * max(abs(expect), 1e-10) * cond
     trigger_if(diff > tol, "PM-STR-002", diff=diff, tol=tol, expect=expect)
 
 
@@ -870,6 +906,17 @@ def check_slab_layer_count_construction_consistency(n_layers_slab, n_layers_reco
     interactions not modeled by either formula as drafted. Within that
     precondition, both quantities are exact integers by construction
     (layer counts), so tol=0 (SANITIZER.md 5.8 X).
+
+    REPAIR 2026-10-09: the recomputation reads struct.lattice.c / ouc.lattice.c
+    and the c-fractional span, which are only meaningful for the stacking
+    construction basis. With lll_reduce=True the observation point (end of
+    get_slab) is AFTER the LLL basis change, so c is no longer the stacking
+    vector (physical planes were counted correctly: simple cubic (110) has 4
+    planes = n_layers_slab, recompute gave 3). The call site now evaluates the
+    recomputation on the slab as built, i.e. the structure captured just
+    before the optional LLL step (identical to the final structure when
+    lll_reduce=False). Sweep of 4 structures x 7 Miller indices x 3 sizes x
+    2 in_unit_planes x lll False/True (84 combos): 0 mismatches.
     """
     trigger_if(n_layers_slab != n_layers_recompute, "PM-SURF-002",
                n_layers_slab=n_layers_slab, n_layers_recompute=n_layers_recompute)
@@ -935,7 +982,7 @@ def check_universal_anisotropy_non_negative(anisotropy, cond_voigt, mag):
 # ---------------------------------------------------------------------------
 
 @_guard
-def check_interpolate_endpoint_reproduction(diff_start, diff_end, magnitude, has_end):
+def check_interpolate_endpoint_reproduction(diff_start, diff_end, magnitude, has_end, has_start=True):
     """PM-STR-007: interpolate(end_structure, ...)'s x=0 and x=1 images
     reproduce the start and end structures exactly, up to an integer
     lattice translation.
@@ -964,9 +1011,17 @@ def check_interpolate_endpoint_reproduction(diff_start, diff_end, magnitude, has
     ``pbc=False`` path (no wrap-around at all) trivially satisfies the same
     mod-1 comparison since diff is already ~0 there. Confirmed silent
     across the full targeted regression suite.
+
+    REPAIR 2026-10-09: the x=0 image only exists when the amplitude list
+    actually contains 0. For an explicit amplitude list such as
+    nimages=[0.25, 0.5, 0.75], images[0] is legitimately at
+    start + 0.25*(end - start), so the start comparison is gated by
+    ``has_start`` exactly as the end comparison is gated by ``has_end``
+    (default True = old behaviour).
     """
     tol = 100.0 * eps64 * max(magnitude, 1.0)
-    trigger_if(diff_start > tol, "PM-STR-007", family="start", diff=diff_start, tol=tol)
+    if has_start:
+        trigger_if(diff_start > tol, "PM-STR-007", family="start", diff=diff_start, tol=tol)
     if has_end:
         trigger_if(diff_end > tol, "PM-STR-007", family="end", diff=diff_end, tol=tol)
 
@@ -1048,7 +1103,7 @@ def check_oxi_state_guess_charge_balance(diff, num_atoms, target_charge):
 # ---------------------------------------------------------------------------
 
 @_guard
-def check_cif_symmetry_orbit_divisibility(n_ops, orbit_size, coord):
+def check_cif_symmetry_orbit_divisibility(n_ops, orbit_size, coord, images=None, atol=None):
     """PM-CIF-001: the size of the symmetry-equivalent orbit _unique_coords
     expands from a single asymmetric-unit coordinate must evenly divide the
     number of parsed symmetry operations (orbit-stabilizer theorem: any
@@ -1119,5 +1174,22 @@ def check_cif_symmetry_orbit_divisibility(n_ops, orbit_size, coord):
     operation) are unaffected, confirmed by re-running the full round-1
     probe.
     """
+    if images is not None and atol:
+        # REPAIR 2026-10-09: orbit membership is decided by the greedy,
+        # tolerance-based in_coord_list_pbc, which is non-transitive for
+        # points whose mutual (periodic, per-component) separation lies in a
+        # band around site_tolerance (a coordinate within ~site_tolerance of a
+        # symmetry element). Sweep for P4mm orbit 3-of-8: offsets <=0.3*tol
+        # give 1 site, 0.6/1.0/1.5*tol give 2/3/4, >=2*tol give 8. Exact
+        # divisibility is only a law for an unambiguous orbit, so skip when
+        # any two op-images are separated by more than 0.1*tol and less than
+        # 10*tol; coincident (<=0.1*tol) and well-separated (>=10*tol) images
+        # keep the exact integer check.
+        pts = np.asarray(images, dtype=float).reshape(-1, 3)
+        if len(pts) > 1:
+            dd = pts[:, None, :] - pts[None, :, :]
+            dd = np.abs(dd - np.round(dd)).max(axis=2)
+            if np.any((dd > 0.1 * atol) & (dd < 10.0 * atol)):
+                return
     trigger_if(orbit_size <= 0 or n_ops % orbit_size != 0, "PM-CIF-001",
                n_ops=n_ops, orbit_size=orbit_size, coord=list(coord))

@@ -2662,11 +2662,12 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
                 return diff_arr - np.round(diff_arr)
 
             first_diff = float(np.max(np.abs(_mod1(structs[0].frac_coords - start_coords))))
+            has_start = bool(images_arr.size and abs(float(images_arr[0])) < 1e-12)
             has_end = bool(images_arr.size and abs(float(images_arr[-1]) - end_amplitude) < 1e-12)
             end_diff = 0.0
             if has_end:
                 end_diff = float(np.max(np.abs(_mod1(structs[-1].frac_coords - end_coords))))
-            _sc.check_interpolate_endpoint_reproduction(first_diff, end_diff, magnitude, has_end)
+            _sc.check_interpolate_endpoint_reproduction(first_diff, end_diff, magnitude, has_end, has_start)
 
             n_elements = max(len(self.composition.elements), 1)
             for idx, image in enumerate(structs):
@@ -4725,6 +4726,7 @@ class Structure(IStructure, MutableSequence[PeriodicSite]):
         # TODO (janosh) maybe default in_place to False after a depreciation period
         n_before = len(self)
         vol_before = self.volume
+        cond_before = _sc.safe_cond(self.lattice.matrix) if _sc.enabled() else 1.0
         struct: Self = self if in_place else self.copy()
         supercell = struct * scaling_matrix
         if to_unit_cell:
@@ -4746,7 +4748,9 @@ class Structure(IStructure, MutableSequence[PeriodicSite]):
                 int_mat = int_mat * np.eye(3, dtype=int)
             det_m = float(np.linalg.det(int_mat))
             _sc.check_supercell_site_count_conservation(n_before, len(struct), det_m)
-            _sc.check_supercell_volume_determinant_scaling(vol_before, struct.volume, det_m)
+            _sc.check_supercell_volume_determinant_scaling(
+                vol_before, struct.volume, det_m, max(cond_before, _sc.safe_cond(struct.lattice.matrix))
+            )
 
         return struct
 

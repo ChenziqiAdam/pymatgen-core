@@ -323,6 +323,9 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
             for k, v in d2.items():
                 pooled[k] += v
             add_dict = result.get_el_amt_dict()
+            # constructor drops symbols with |amount| < amount_tolerance (allow_negative cancellation)
+            atol = type(self).amount_tolerance
+            pooled = {k: (0.0 if (k not in add_dict and abs(v) < atol) else v) for k, v in pooled.items()}
             all_keys = set(pooled) | set(add_dict)
             max_diff = max((abs(pooled.get(k, 0.0) - add_dict.get(k, 0.0)) for k in all_keys), default=0.0)
             max_amount = max([abs(v) for v in list(pooled.values()) + list(add_dict.values())] or [1.0])
@@ -657,7 +660,17 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
         if _sc.enabled() and not getattr(self, "_scibench_recall", False):
             self._scibench_recall = True  # type: ignore[attr-defined]
             try:
-                total = sum(abs(self[e]) / self._n_atoms for e in self.elements)
+                # one term per distinct symbol: the symbol aggregate if a bare
+                # Element key is present (self[Element] already sums every
+                # Species of that symbol), else the per-Species terms.
+                by_symbol: dict = {}
+                for e in self.elements:
+                    by_symbol.setdefault(e.symbol, []).append(e)
+                total = 0.0
+                for group in by_symbol.values():
+                    bare = [e for e in group if not isinstance(e, Species)]
+                    members = bare[:1] if bare else group
+                    total += sum(abs(self[e]) / self._n_atoms for e in members)
                 _sc.check_atomic_fraction_partition(total, len(self.elements))
             finally:
                 self._scibench_recall = False  # type: ignore[attr-defined]

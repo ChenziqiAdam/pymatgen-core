@@ -1076,7 +1076,7 @@ class Lattice(MSONable):
             self._lll_matrix_mappings[delta] = self._calculate_lll()
         result = type(self)(self._lll_matrix_mappings[delta][0])
         if _sc.enabled():
-            _sc.check_lll_volume_invariance(self.volume, result.volume)
+            _sc.check_lll_volume_invariance(self.volume, result.volume, _sc.safe_cond(self.matrix))
         return result
 
     def _calculate_lll(self, delta: float = 0.75) -> tuple[NDArray[np.float64], NDArray[np.float64]]:

@@ -1173,6 +1173,7 @@ class SlabGenerator:
         # (Optionally) Post-process the Slab
         # Orthogonalize the structure (through LLL lattice basis reduction)
         scale_factor = self.slab_scale_factor
+        _sc_struct_prelll = struct  # slab as stacked, before the optional LLL basis change
         if self.lll_reduce:
             # Sanitize Slab (LLL reduction + site sorting + map frac_coords)
             lll_slab = struct.copy(sanitize=True)
@@ -1226,7 +1227,7 @@ class SlabGenerator:
         ).T
 
         if _sc.enabled() and not self.primitive:
-            self._check_surface_normal_and_layer_count(struct, ouc, n_layers_slab)
+            self._check_surface_normal_and_layer_count(struct, ouc, n_layers_slab, _sc_struct_prelll)
 
         return Slab(
             struct.lattice,
@@ -1241,7 +1242,7 @@ class SlabGenerator:
             energy=energy,
         )
 
-    def _check_surface_normal_and_layer_count(self, struct, ouc, n_layers_slab) -> None:
+    def _check_surface_normal_and_layer_count(self, struct, ouc, n_layers_slab, struct_prelll=None) -> None:
         """Re-call checks for PM-SURF-001 and PM-SURF-002, run at the end of
         get_slab (before reorient_lattice post-processing and before
         primitive-cell reduction, both of which are outside either law's
@@ -1276,8 +1277,11 @@ class SlabGenerator:
             ouc_c = np.round(np.mod(ouc.frac_coords[:, 2], 1.0), 6)
             if len(np.unique(ouc_c)) != 1:
                 return
-            c_coords = struct.frac_coords[:, 2]
-            n_layers_total = round(struct.lattice.c / ouc.lattice.c)
+            # Recompute on the slab as stacked (before LLL): afterwards c is no
+            # longer the stacking vector (PM-SURF-002 repair 2026-10-09).
+            stacked = struct_prelll if struct_prelll is not None else struct
+            c_coords = stacked.frac_coords[:, 2]
+            n_layers_total = round(stacked.lattice.c / ouc.lattice.c)
             span = float(c_coords.max() - c_coords.min())
             n_layers_recompute = round(span * n_layers_total) + 1
             _sc.check_slab_layer_count_construction_consistency(n_layers_slab, n_layers_recompute)
