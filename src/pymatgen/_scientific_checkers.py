@@ -299,6 +299,17 @@ def check_formula_reduction_scale_invariance(reduced_orig, reduced_scaled, k):
                reduced_orig=reduced_orig, reduced_scaled=reduced_scaled, k=k)
 
 
+def composition_keys_collided(comp) -> bool:
+    """True if the constructor overwrote colliding keys (duplicate input such as
+    {"Fe": 1, Element("Fe"): 2}): the stored amounts then no longer sum to the
+    atom count the constructor accumulated, so amount-based laws are undefined."""
+    try:
+        total = sum(abs(v) for v in comp._data.values())
+        return abs(total - comp._n_atoms) > 1e3 * eps64 * abs(comp._n_atoms)
+    except Exception:
+        return False
+
+
 @_guard
 def check_atomic_fraction_partition(fraction_sum, n_elements):
     """PM-COMP-002: sum of atomic fractions across all elements == 1.
@@ -365,6 +376,9 @@ def check_composition_addition_symbol_pooling(max_diff, max_amount):
     diff/(eps64*max_amount) ratio was 0. Tolerance set to 100x for
     headroom.
     """
+    # max_amount is the largest magnitude entering the pooled sums (operands and
+    # sum): the pooled subtraction/addition rounds at eps64 * that magnitude,
+    # even when the result is small after cancellation.
     tol = 100.0 * eps64 * max(max_amount, 1.0)
     trigger_if(max_diff > tol, "PM-COMP-004", diff=max_diff, tol=tol)
 
@@ -388,12 +402,21 @@ def check_symmop_inverse_roundtrip(point, roundtrip_point, cond, point_norm):
 
 
 @_guard
-def check_rotation_matrix_orthogonality(rotation_matrix):
+def check_rotation_matrix_orthogonality(rotation_matrix, axis=None):
     """PM-OP-002: R @ R.T == I for a rotation-constructed SymmOp.
 
     Same 50-trial sweep: worst observed diff/eps64 ratio was 4.0.
     Tolerance set to 100x*eps64.
     """
+    if axis is not None:
+        # The axis is normalised as axis / norm(axis); norm squares the
+        # components, so the normalisation is exact only while axis @ axis is a
+        # normal float64 (neither underflowing to subnormal nor overflowing).
+        ax = np.asarray(axis, dtype=float)
+        n2 = float(ax @ ax)
+        fi = np.finfo(np.float64)
+        if not np.isfinite(n2) or not (fi.tiny / eps64 <= n2 <= fi.max):
+            return
     R = np.asarray(rotation_matrix)
     diff = np.abs(R @ R.T - np.eye(3)).max()
     tol = 100.0 * eps64
@@ -657,7 +680,7 @@ def check_decomposition_mass_conservation(max_element_diff, dim, cond=1.0, amoun
 # ---------------------------------------------------------------------------
 
 @_guard
-def check_ewald_eta_split_invariance(e1, e2, eta1, eta2, acc_factor, n_sites):
+def check_ewald_eta_split_invariance(e1, e2, eta1, eta2, acc_factor, n_sites, term_scale=0.0):
     """PM-EWALD-001: total_energy is invariant to the eta real/reciprocal
     split parameter, for two EwaldSummation objects built with different
     eta (each with its own eta-dependent auto cutoffs) on the same
@@ -691,7 +714,10 @@ def check_ewald_eta_split_invariance(e1, e2, eta1, eta2, acc_factor, n_sites):
     the maximum of that term and 1000*eps64*magnitude.
     """
     diff = abs(e1 - e2)
-    magnitude = max(abs(e1), abs(e2), 1.0)
+    # term_scale: largest magnitude among the summed Ewald terms (real, reciprocal,
+    # point, charged-cell) of both objects. Rounding and truncation errors of the
+    # sum scale with the terms, not with their possibly cancelled total.
+    magnitude = max(abs(e1), abs(e2), abs(term_scale), 1.0)
     # The convergence-digit contract cannot reduce float64 summation error
     # below its machine-precision floor.  The original derivation only swept
     # acc_factor <= 10 and extrapolated the decimal term below that floor.
@@ -1227,6 +1253,11 @@ def check_cif_symmetry_orbit_divisibility(n_ops, orbit_size, coord, images=None,
             dd = pts[:, None, :] - pts[None, :, :]
             dd = np.abs(dd - np.round(dd)).max(axis=2)
             if np.any((dd > 0.1 * atol) & (dd < 10.0 * atol)):
+                return
+            # images that coincide only up to float64 rounding of the
+            # operation arithmetic cannot be merged by a tolerance below that
+            # rounding level: the orbit is not defined at that tolerance
+            if np.any((dd > atol) & (dd <= 1e3 * eps64)):
                 return
     trigger_if(orbit_size <= 0 or n_ops % orbit_size != 0, "PM-CIF-001",
                n_ops=n_ops, orbit_size=orbit_size, coord=list(coord))

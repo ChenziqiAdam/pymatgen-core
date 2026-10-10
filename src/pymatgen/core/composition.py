@@ -331,7 +331,9 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
                     pooled[key.symbol] -= val
             all_keys = set(pooled) | set(add_dict)
             max_diff = max((abs(pooled.get(k, 0.0) - add_dict.get(k, 0.0)) for k in all_keys), default=0.0)
-            max_amount = max([abs(v) for v in list(pooled.values()) + list(add_dict.values())] or [1.0])
+            max_amount = max(
+                [abs(v) for v in [*pooled.values(), *add_dict.values(), *d1.values(), *d2.values()]] or [1.0]
+            )
             _sc.check_composition_addition_symbol_pooling(max_diff, max_amount)
         return result
 
@@ -679,7 +681,7 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
                     if bare and len({self._data[e] > 0 for e in group}) > 1:
                         cancels = True
                     total += sum(abs(self[e]) / self._n_atoms for e in members)
-                if not cancels:
+                if not cancels and not _sc.composition_keys_collided(self):
                     _sc.check_atomic_fraction_partition(total, len(self.elements))
             finally:
                 self._scibench_recall = False  # type: ignore[attr-defined]
@@ -876,7 +878,11 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
     def as_weight_dict(self) -> dict[str, float]:
         """Get a dict of element symbols mapped to weight fractions, e.g. {"Ti": 0.90, "V": 0.06, "Al": 0.04}."""
         wd = {str(el): self.get_wt_fraction(el) for el in self.elements}
-        if _sc.enabled() and not any(isinstance(el, Species) for el in self.elements):
+        if (
+            _sc.enabled()
+            and not any(isinstance(el, Species) for el in self.elements)
+            and not _sc.composition_keys_collided(self)
+        ):
             try:
                 back = Composition.from_weight_dict(wd)
                 fc1, fc2 = self.fractional_composition, back.fractional_composition

@@ -339,7 +339,7 @@ class SymmOp(MSONable):
         rot_mat[2, 2] = cos_a + unit_vec[2] ** 2 * (1 - cos_a)
 
         if _sc.enabled():
-            _sc.check_rotation_matrix_orthogonality(rot_mat)
+            _sc.check_rotation_matrix_orthogonality(rot_mat, axis)
 
         return SymmOp.from_rotation_and_translation(rot_mat, vec)
 

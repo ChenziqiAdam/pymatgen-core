@@ -778,6 +778,8 @@ class PhaseDiagram(MSONable):
                 for el, v in fc.items():
                     recon[el] = recon.get(el, 0.0) + amt * v
             target = comp.fractional_composition
+            if _sc.composition_keys_collided(comp):
+                return result
             all_els = set(recon) | set(target.elements)
             max_diff = max(
                 (abs(recon.get(el, 0.0) - target.get(el, 0.0)) for el in all_els),

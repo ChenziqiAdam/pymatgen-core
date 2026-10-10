@@ -258,8 +258,17 @@ class EwaldSummation(MSONable):
                 )
                 probe._eta_input = self._eta
                 probe_energy = probe.total_energy
+                term_scale = max(
+                    max(
+                        abs(float(o._recip.sum())),
+                        abs(float(o._real.sum())),
+                        abs(float(o._point.sum())),
+                        abs(float(o._charged_cell_energy)),
+                    )
+                    for o in (self, probe)
+                )
                 _sc.check_ewald_eta_split_invariance(
-                    energy, probe_energy, self._eta, probe_eta, self._acc_factor, len(self._struct)
+                    energy, probe_energy, self._eta, probe_eta, self._acc_factor, len(self._struct), term_scale
                 )
             except Exception:
                 pass
