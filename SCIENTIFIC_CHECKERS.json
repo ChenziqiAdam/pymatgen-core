@@ -76,7 +76,7 @@
       "symbol": "reduced_formula"
     },
     {
-      "alarm": "(when the precondition holds) abs(sum(fractions) - 1) exceeds 100*eps64*n_elements (n_elements = len(comp.elements))",
+      "alarm": "(when the precondition holds) abs(sum(fractions) - 1) exceeds (100*eps64 + 10*(eps_a - eps64))*n_elements, where n_elements = len(comp.elements) and eps_a is the largest machine epsilon among the inexact dtypes of the stored amounts (eps64 for float64 or integer amounts)",
       "family": "atomic_fraction_partition",
       "id": "PM-COMP-002",
       "invariant": "sum over distinct element symbols of the atomic fraction == 1 within tolerance; get_atomic_fraction(Element) is the symbol aggregate (sums every Species of that symbol), so a bare Element key and a Species key of the same symbol are counted once",
@@ -124,12 +124,12 @@
       "symbol": "operate"
     },
     {
-      "alarm": "max(abs(R @ R.T - eye(3))) exceeds 100*eps64",
+      "alarm": "max(abs(R @ R.T - eye(3))) exceeds 100*eps_axis, where eps_axis is the machine epsilon of the axis dtype (eps64 for float64 and integer axes, eps32 for a float32 axis)",
       "family": "rotation_matrix_orthogonality",
       "id": "PM-OP-002",
       "invariant": "allclose(R @ R.T, eye(3)) for the constructed rotation_matrix",
       "observation_point": "inside from_axis_angle_and_translation, immediately after assembling the Rodrigues-formula rotation matrix, before delegating to from_rotation_and_translation",
-      "precondition": "any SymmOp constructed via from_axis_angle_and_translation, for any rotation axis whose squared norm is a finite normal float64 (at least finfo.tiny/eps64 and at most finfo.max), so that axis / norm(axis) is computed without underflow or overflow, and any angle",
+      "precondition": "any SymmOp constructed via from_axis_angle_and_translation, for any rotation axis whose squared norm is a finite normal float64 (at least finfo.tiny/eps64 and at most finfo.max), so that axis / norm(axis) is computed without underflow or overflow, and any angle; a floating axis array of dtype float32 or wider (float16 and narrower are out of domain)",
       "rationale": "every consumer of a SymmOp constructed this way implicitly assumes the rotation part is a genuine rotation; a non-orthogonal rotation matrix would silently distort distances and angles under operate/operate_multi, corrupting every symmetry-based structure comparison built on it",
       "scientific_quantity": "proper rotation matrix (R @ R.T == I), the defining algebraic property of the orthogonal group O(3)",
       "source": "pymatgen/core/operations.py",
@@ -244,7 +244,7 @@
       "symbol": "get_decomposition"
     },
     {
-      "alarm": "any element's amount differing by more than 100*eps64*(dim+1)*max(1, cond) + Composition.amount_tolerance (cond as in PM-PD-002) between the reconstructed and original fractional composition",
+      "alarm": "any element's amount differing by more than 100*eps64*(dim+1)*max(1, cond) + Composition.amount_tolerance + 10*(eps_a - eps64)*(dim+1) (cond as in PM-PD-002; eps_a = largest machine epsilon among the inexact dtypes of the composition's stored amounts, eps64 for float64) between the reconstructed and original fractional composition",
       "family": "decomposition_mass_conservation",
       "id": "PM-PD-003",
       "invariant": "sum(amt * entry.composition.fractional_composition for entry, amt in get_decomposition(comp).items()) is close to comp.fractional_composition",
@@ -308,7 +308,7 @@
       "family": "tensor_rotation_trace_eigenvalue_invariance",
       "id": "PM-TENS-001",
       "invariant": "trace(tensor.rotate(R)) is close to trace(tensor), and sorted(eigvalsh(tensor.rotate(R))) is close to sorted(eigvalsh(tensor)), for any R accepted by rotate's own precondition",
-      "observation_point": "a re-call sanitizer wrapping Tensor.rotate, independently recomputing trace via np.trace and eigenvalues via np.linalg.eigvalsh on both the input and rotated tensors, and recording R's own orthogonality deviation (R@R.T - I)",
+      "observation_point": "a re-call sanitizer wrapping Tensor.rotate, independently recomputing trace via np.trace and eigenvalues via np.linalg.eigvalsh on both the input and rotated tensors, and recording R's own orthogonality deviation (R@R.T - I); the reference trace and eigenvalues are computed in at least float64, whatever the dtype of the tensor",
       "precondition": "any rank-2 (3x3) Tensor, any rotation matrix accepted by SquareTensor.is_rotation(tol) for whatever tol the caller supplies to rotate() (the library's own validity check, reused as-is -- NOT restricted to machine-precision-exact orthogonality, since rotate's own tol parameter documents that approximately-orthogonal matrices are a valid input); real or complex rank-2 tensors (eigenvalues are taken of the Hermitian part (T + T^H)/2, which is rotation-invariant for real R)",
       "rationale": "Tensor.rotate/transform are used to re-express measured or computed physical-property tensors (elastic constants, piezoelectric tensors, dielectric tensors) in a different crystallographic frame; a bug in the congruence transform would silently distort the physical content of the tensor for some rotation",
       "scientific_quantity": "trace and (sorted) eigenvalues of a rank-2 tensor, invariant under a proper-rotation congruence transform -- a standard similarity-invariance fact of linear algebra, independent of SymmOp.transform_tensor's einsum-based implementation",

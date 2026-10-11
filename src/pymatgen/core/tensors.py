@@ -135,8 +135,10 @@ class Tensor(np.ndarray, MSONable):
         result = self.transform(symm_op)
         if _sc.enabled() and self.rank == 2:
             try:
-                arr0 = np.asarray(self)
-                arr1 = np.asarray(result)
+                # reference quantities in at least float64, whatever the input dtype
+                ct = np.result_type(np.asarray(self).dtype, np.asarray(result).dtype, np.float64)
+                arr0 = np.asarray(self).astype(ct)
+                arr1 = np.asarray(result).astype(ct)
                 trace0, trace1 = np.trace(arr0), np.trace(arr1)
                 eig0 = np.linalg.eigvalsh((arr0 + arr0.conj().T) / 2)
                 eig1 = np.linalg.eigvalsh((arr1 + arr1.conj().T) / 2)

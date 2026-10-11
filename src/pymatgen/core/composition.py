@@ -682,7 +682,9 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
                         cancels = True
                     total += sum(abs(self[e]) / self._n_atoms for e in members)
                 if not cancels and not _sc.composition_keys_collided(self):
-                    _sc.check_atomic_fraction_partition(total, len(self.elements))
+                    _sc.check_atomic_fraction_partition(
+                        total, len(self.elements), _sc.amount_eps(self._data.values())
+                    )
             finally:
                 self._scibench_recall = False  # type: ignore[attr-defined]
         return frac

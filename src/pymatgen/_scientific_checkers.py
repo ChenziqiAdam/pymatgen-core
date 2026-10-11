@@ -299,6 +299,21 @@ def check_formula_reduction_scale_invariance(reduced_orig, reduced_scaled, k):
                reduced_orig=reduced_orig, reduced_scaled=reduced_scaled, k=k)
 
 
+def amount_eps(values) -> float:
+    """Largest machine epsilon among the inexact dtypes of the supplied
+    amounts (eps64 if none): float32 amounts are stored and accumulated in
+    float32, so amount-based identities only hold to that resolution."""
+    e = eps64
+    try:
+        for v in values:
+            dt = np.asarray(v).dtype
+            if np.issubdtype(dt, np.inexact):
+                e = max(e, float(np.finfo(dt).eps))
+    except Exception:
+        pass
+    return e
+
+
 def composition_keys_collided(comp) -> bool:
     """True if the constructor overwrote colliding keys (duplicate input such as
     {"Fe": 1, Element("Fe"): 2}): the stored amounts then no longer sum to the
@@ -311,7 +326,7 @@ def composition_keys_collided(comp) -> bool:
 
 
 @_guard
-def check_atomic_fraction_partition(fraction_sum, n_elements):
+def check_atomic_fraction_partition(fraction_sum, n_elements, aeps=eps64):
     """PM-COMP-002: sum of atomic fractions across all elements == 1.
 
     10-composition sweep (including mixed Element/Species-keyed
@@ -327,7 +342,7 @@ def check_atomic_fraction_partition(fraction_sum, n_elements):
     is present, else the per-Species terms); n_elements is unchanged.
     """
     diff = abs(fraction_sum - 1.0)
-    tol = 100.0 * eps64 * max(n_elements, 1)
+    tol = (100.0 * eps64 + 10.0 * max(aeps - eps64, 0.0)) * max(n_elements, 1)
     trigger_if(diff > tol, "PM-COMP-002", diff=diff, tol=tol)
 
 
@@ -406,12 +421,24 @@ def check_rotation_matrix_orthogonality(rotation_matrix, axis=None):
     """PM-OP-002: R @ R.T == I for a rotation-constructed SymmOp.
 
     Same 50-trial sweep: worst observed diff/eps64 ratio was 4.0.
-    Tolerance set to 100x*eps64.
+    Tolerance set to 100x*eps(axis dtype): the axis is normalised in its own
+    dtype, so a float32 axis gives orthogonality to float32 resolution;
+    float16 and narrower axes are out of domain.
     """
+    op_eps = eps64
     if axis is not None:
         # The axis is normalised as axis / norm(axis); norm squares the
         # components, so the normalisation is exact only while axis @ axis is a
         # normal float64 (neither underflowing to subnormal nor overflowing).
+        raw = np.asarray(axis)
+        if np.issubdtype(raw.dtype, np.inexact) and np.finfo(raw.dtype).eps > eps64:
+            # the library normalises in the axis dtype: R is orthogonal only
+            # to that dtype's resolution. float16 (and below) is out of domain.
+            if np.finfo(raw.dtype).eps > np.finfo(np.float32).eps:
+                return
+            op_eps = float(np.finfo(raw.dtype).eps)
+        else:
+            op_eps = eps64
         ax = np.asarray(axis, dtype=float)
         n2 = float(ax @ ax)
         fi = np.finfo(np.float64)
@@ -419,7 +446,7 @@ def check_rotation_matrix_orthogonality(rotation_matrix, axis=None):
             return
     R = np.asarray(rotation_matrix)
     diff = np.abs(R @ R.T - np.eye(3)).max()
-    tol = 100.0 * eps64
+    tol = 100.0 * op_eps
     trigger_if(diff > tol, "PM-OP-002", diff=diff, tol=tol)
 
 
@@ -660,7 +687,7 @@ def check_decomposition_convex_combination(amount_sum, min_amount, dim, numerica
 
 
 @_guard
-def check_decomposition_mass_conservation(max_element_diff, dim, cond=1.0, amount_tolerance=0.0):
+def check_decomposition_mass_conservation(max_element_diff, dim, cond=1.0, amount_tolerance=0.0, aeps=eps64):
     """PM-PD-003: decomposition amounts weighted by facet-entry compositions
     reconstruct the original (fractional) composition.
 
@@ -671,7 +698,10 @@ def check_decomposition_mass_conservation(max_element_diff, dim, cond=1.0, amoun
     composition is stored at that resolution (components below it are
     dropped by the constructor), so deviations below it are not detectable.
     """
-    tol = 100.0 * eps64 * (dim + 1) * max(cond, 1.0) + amount_tolerance
+    # target fractions inherit the rounding of the stored amounts (float32
+    # amounts are summed in float32); the solve itself is float64.
+    tol = (100.0 * eps64 * (dim + 1) * max(cond, 1.0) + amount_tolerance
+           + 10.0 * max(aeps - eps64, 0.0) * (dim + 1))
     trigger_if(max_element_diff > tol, "PM-PD-003", diff=max_element_diff, tol=tol)
 
 

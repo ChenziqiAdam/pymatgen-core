@@ -790,6 +790,7 @@ class PhaseDiagram(MSONable):
                 self.dim,
                 _sc.safe_cond(simplex._aug) if hasattr(simplex, "_aug") else 1.0,
                 Composition.amount_tolerance,
+                _sc.amount_eps(comp._data.values()),
             )
         return result
 
