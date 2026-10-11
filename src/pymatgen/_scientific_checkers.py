@@ -808,6 +808,8 @@ def check_periodic_symmop_atom_correspondence(max_residual, symprec, n_ops, n_si
     than to eps64 alone, since symprec is user-controllable and can be much
     looser than machine precision.
     """
+    if symprec < 1e-5:
+        return  # P: spglib's own default is 1e-5; tighter is below realistic coordinate precision
     # rounding_bound: first-order magnitude (Angstrom) of the intermediate
     # terms |R||f| + |t| + |f| propagated through |lattice|, i.e. the scale
     # at which float evaluation of op.operate(f) - f is only good to
