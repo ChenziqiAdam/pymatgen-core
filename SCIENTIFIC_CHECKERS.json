@@ -292,7 +292,7 @@
       "symbol": "get_all_neighbors_py"
     },
     {
-      "alarm": "max periodic-image residual (in Cartesian Angstrom) across all (op, site) pairs exceeds max(10*symprec, 100*eps64)",
+      "alarm": "max periodic-image residual (in Cartesian Angstrom) across all (op, site) pairs exceeds max(10*symprec, 100*eps64*max(1, B)), where B is the largest first-order magnitude of the evaluated terms, norm((|R||f| + |t| + |f|) |lattice|), over all (op, site) pairs",
       "family": "periodic_symmop_atom_correspondence",
       "id": "PM-SYM-001",
       "invariant": "for every returned SymmOp op and every site s, op applied to s's fractional coordinates lands (modulo np.round of the fractional difference) within tolerance of some site of the same species",

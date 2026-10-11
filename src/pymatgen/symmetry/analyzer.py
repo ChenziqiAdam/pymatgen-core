@@ -373,9 +373,17 @@ class SpacegroupAnalyzer:
             return
         try:
             max_residual = 0.0
+            rounding_bound = 0.0
+            abs_matrix = np.abs(struct.lattice.matrix)
             for op in sym_ops:
                 for site in struct:
                     new_frac = op.operate(site.frac_coords)
+                    terms = (
+                        np.abs(op.rotation_matrix) @ np.abs(site.frac_coords)
+                        + np.abs(op.translation_vector)
+                        + np.abs(site.frac_coords)
+                    )
+                    rounding_bound = max(rounding_bound, float(np.linalg.norm(terms @ abs_matrix)))
                     best = None
                     for other in struct:
                         if other.species != site.species:
@@ -393,7 +401,7 @@ class SpacegroupAnalyzer:
                     if best > max_residual:
                         max_residual = best
             _sc.check_periodic_symmop_atom_correspondence(
-                max_residual, self._symprec, len(sym_ops), len(struct)
+                max_residual, self._symprec, len(sym_ops), len(struct), rounding_bound
             )
         except Exception:
             pass
