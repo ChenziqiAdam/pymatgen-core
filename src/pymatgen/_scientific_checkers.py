@@ -441,8 +441,10 @@ def check_rotation_matrix_orthogonality(rotation_matrix, axis=None):
             op_eps = eps64
         ax = np.asarray(axis, dtype=float)
         n2 = float(ax @ ax)
-        fi = np.finfo(np.float64)
-        if not np.isfinite(n2) or not (fi.tiny / eps64 <= n2 <= fi.max):
+        # the squared norm is formed in the axis dtype: range-check it against
+        # that dtype's normal range
+        fi = np.finfo(np.float32) if op_eps > eps64 else np.finfo(np.float64)
+        if not np.isfinite(n2) or not (float(fi.tiny) / float(fi.eps) <= n2 <= float(fi.max)):
             return
     R = np.asarray(rotation_matrix)
     diff = np.abs(R @ R.T - np.eye(3)).max()
@@ -1296,5 +1298,12 @@ def check_cif_symmetry_orbit_divisibility(n_ops, orbit_size, coord, images=None,
             # rounding level: the orbit is not defined at that tolerance
             if np.any((dd > atol) & (dd <= 1e3 * eps64)):
                 return
+    if atol:
+        # the coordinate cannot carry its fractional part to the site tolerance:
+        # rounding of the operation arithmetic on |coord| exceeds atol, so the
+        # orbit is not defined at this tolerance
+        scale = max(1.0, float(np.max(np.abs(np.asarray(coord, dtype=float)))))
+        if 16.0 * eps64 * scale > max(atol, 1e3 * eps64):
+            return
     trigger_if(orbit_size <= 0 or n_ops % orbit_size != 0, "PM-CIF-001",
                n_ops=n_ops, orbit_size=orbit_size, coord=list(coord))

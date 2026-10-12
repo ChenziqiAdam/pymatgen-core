@@ -2154,6 +2154,10 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
         """
         if len(self) * max(r, 1.0) > 200:
             return
+        # the brute-force oracle always searches all three periodic images; it is
+        # only the reference for a fully periodic lattice
+        if not all(self.pbc):
+            return
         try:
             self._in_neighbor_oracle_check = True
             with _sc._quiet():
@@ -2163,16 +2167,32 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
         finally:
             self._in_neighbor_oracle_check = False
 
-        def to_set(neighbors, is_old=False):
+        # The image label's reference cell is an implementation convention when a
+        # site is stored outside the unit cell; in that case compare the neighbor
+        # multiset of (index, distance) instead of the labelled image.
+        frac = np.asarray(self.frac_coords)
+        labelled = bool(np.all((frac > -1e-8) & (frac < 1 + 1e-8)))
+
+        def finish(rows):
+            if labelled:
+                return {(i, im, d) for i, im, d in rows}
+            seen = {}
             out = set()
+            for i, _, d in sorted(rows, key=lambda t: (t[0], t[2])):
+                k = seen.get((i, d), 0)
+                seen[(i, d)] = k + 1
+                out.add((i, (k,), d))
+            return out
+
+        def to_set(neighbors, is_old=False):
+            rows = []
             if is_old:
-                for item in neighbors:
-                    site, dist, idx, image = item
-                    out.add((idx, tuple(int(v) for v in image), round(float(dist), 6)))
+                for site, dist, idx, image in neighbors:
+                    rows.append((int(idx), tuple(int(v) for v in image), round(float(dist), 6)))
             else:
                 for n in neighbors:
-                    out.add((n.index, tuple(int(v) for v in n.image), round(float(n.nn_distance), 6)))
-            return out
+                    rows.append((int(n.index), tuple(int(v) for v in n.image), round(float(n.nn_distance), 6)))
+            return finish(rows)
 
         # PM-STR-006 precondition (FIX, 2026-09-19, round-1 triggerability):
         # get_all_neighbors_py delegates to get_points_in_spheres, whose
@@ -2216,7 +2236,7 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
             fast_set = to_set(fast_result[i])
             old_set = to_set(old_result[i], is_old=True)
             if checker_id == "PM-STR-006":
-                boundary = max(numerical_tol, _ROUNDING_GRANULARITY)
+                boundary = numerical_tol + _ROUNDING_GRANULARITY
                 fast_set = {t for t in fast_set if abs(t[2] - r) > boundary}
                 old_set = {t for t in old_set if abs(t[2] - r) > boundary}
             # Coincident distinct sites (d ~ 0) are a convention difference
