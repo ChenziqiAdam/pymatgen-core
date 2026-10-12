@@ -141,7 +141,9 @@ class SymmOp(MSONable):
                     back = self.inverse.operate(result)
                     cond = np.linalg.cond(self.affine_matrix)
                     point_norm = float(np.linalg.norm(np.asarray(point, dtype=float)))
-                    _sc.check_symmop_inverse_roundtrip(point, back, cond, point_norm)
+                    _sc.check_symmop_inverse_roundtrip(
+                        point, back, cond, point_norm, work_dtype=self.affine_matrix.dtype
+                    )
                 finally:
                     self._scibench_recall = False  # type: ignore[attr-defined]
         return result
@@ -177,7 +179,7 @@ class SymmOp(MSONable):
                     else 1.0
                 )
                 _sc.check_operate_single_vs_batch_consistency(
-                    result, single_stack, term_scale
+                    result, single_stack, term_scale, work_dtype=np.asarray(result).dtype
                 )
             finally:
                 self._scibench_recall = False  # type: ignore[attr-defined]

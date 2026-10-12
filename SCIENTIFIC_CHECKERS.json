@@ -112,7 +112,7 @@
       "symbol": "__add__"
     },
     {
-      "alarm": "max(abs(point - roundtrip)) exceeds 100*eps64*cond(affine_matrix)*max(1,norm(point))",
+      "alarm": "max(abs(point - roundtrip)) exceeds 100*eps*cond(affine_matrix)*max(1,norm(point)), where eps is the machine epsilon of the stored affine_matrix dtype (float64 for the default construction; float32 matrices are held to float32 resolution)",
       "family": "symmop_inverse_roundtrip",
       "id": "PM-OP-001",
       "invariant": "op.inverse.operate(op.operate(point)) is close to point for any Cartesian point",
@@ -136,7 +136,7 @@
       "symbol": "from_axis_angle_and_translation"
     },
     {
-      "alarm": "max(abs(batch_result - single_stack)) exceeds 100*eps64*max(1,max absolute sum of affine dot-product terms)",
+      "alarm": "max(abs(batch_result - single_stack)) exceeds 100*eps*max(1,max absolute sum of affine dot-product terms), where eps is the machine epsilon of the result dtype",
       "family": "operate_single_vs_batch_consistency",
       "id": "PM-OP-003",
       "invariant": "op.operate_multi(points)[i] is close to op.operate(points[i]) for every i",
@@ -268,24 +268,24 @@
       "symbol": "EwaldSummation.total_energy"
     },
     {
-      "alarm": "any neighbor present in one function's output set and absent from the other's (index/image/rounded-distance mismatch)",
+      "alarm": "any neighbor present in one function's output and absent from the other's (index/image mismatch, or no distance match within 1e-6), outside the boundary band",
       "family": "neighbor_search_cross_implementation_consistency",
       "id": "PM-STR-005",
-      "invariant": "for each site i, the SET of (neighbor_index, jimage, round(distance,6)) triples from get_all_neighbors(r)[i] equals the set from get_all_neighbors_old(r, include_index=True, include_image=True)[i], compared order-independently",
+      "invariant": "for each site i, the multiset of (neighbor_index, jimage, distance) from get_all_neighbors(r)[i] equals that from get_all_neighbors_old(r, include_index=True, include_image=True)[i], with distances matched to within 1e-6 and order ignored",
       "observation_point": "a re-call sanitizer wrapping get_all_neighbors, additionally invoking get_all_neighbors_old on the same structure/cutoff and comparing per-site neighbor sets",
-      "precondition": "any Structure with at least one site and a non-degenerate lattice, any cutoff radius r > 0, gated to len(structure)*r <= 200 to keep the O(supercell_size*n_sites) oracle affordable during ordinary test runs (a problem-size precondition, not a restriction of the underlying law); neighbors at distance <= 1e-8 (coincident distinct sites, which the brute-force oracle drops by convention) are excluded from both sets; fully periodic lattice (the brute-force oracle always searches all three periodic directions); when a site is stored outside the unit cell the image label is a convention, so neighbors are then compared by (index, distance) multiset",
+      "precondition": "any Structure with at least one site and a non-degenerate lattice, any cutoff radius r > 0, gated to len(structure)*r <= 200 to keep the O(supercell_size*n_sites) oracle affordable; neighbors at distance <= 1e-8 (coincident distinct sites, which the brute-force oracle drops by convention) are excluded from both sets; neighbors within the cutoff boundary band, |d - r| <= max(numerical_tol, numerical_tol/(2r)) + 1e-6 (both fast paths pad the cutoff: get_points_in_spheres admits d < r + numerical_tol and the Cython search admits d^2 < r^2 + numerical_tol, while the oracle uses d <= r), are excluded from both sets; fully periodic lattice (the brute-force oracle always searches all three periodic directions); when a site is stored outside the unit cell the image label is a convention, so neighbors are then compared by (index, distance) multiset",
       "rationale": "get_all_neighbors is the primary, performance-optimized entry point used throughout the codebase (coordination-number analysis, bonding graphs, local-environment fingerprints); a systematic disagreement with the author-maintained brute-force oracle would mean the fast path silently misses or fabricates neighbors for some structure class",
       "scientific_quantity": "set of periodic neighbors within a cutoff radius r of every site, computed via the fast vectorized get_neighbor_list path vs. the author-declared brute-force oracle get_all_neighbors_old (explicitly decorated 'retained purely for checking purposes')",
       "source": "pymatgen/core/structure.py",
       "symbol": "get_all_neighbors"
     },
     {
-      "alarm": "any neighbor present in one function's output set and absent from the other's, outside the boundary-exclusion band",
+      "alarm": "any neighbor present in one function's output and absent from the other's, outside the boundary band",
       "family": "neighbor_search_cross_implementation_consistency",
       "id": "PM-STR-006",
-      "invariant": "for each site i, the SET of (neighbor_index, jimage, round(distance,6)) triples from get_all_neighbors_py(r)[i] equals the set from get_all_neighbors_old(r, ...)[i], restricted to neighbors unambiguously inside or outside the cutoff (see precondition FIX)",
+      "invariant": "for each site i, the multiset of (neighbor_index, jimage, distance) from get_all_neighbors_py(r)[i] equals that from get_all_neighbors_old(r, ...)[i], with distances matched to within 1e-6, restricted to neighbors outside the boundary band",
       "observation_point": "a re-call sanitizer wrapping get_all_neighbors_py, invoking get_all_neighbors_old on the same structure/cutoff and comparing per-site neighbor sets",
-      "precondition": "same as PM-STR-005, plus: entries whose neighbor distance falls within numerical_tol + 5e-7 of the cutoff r are excluded from the fast/old set comparison, since get_points_in_spheres pads the cutoff by numerical_tol and the oracle does not; fully periodic lattice (the brute-force oracle always searches all three periodic directions); when a site is stored outside the unit cell the image label is a convention, so neighbors are then compared by (index, distance) multiset",
+      "precondition": "same as PM-STR-005, applied to get_all_neighbors_py (including its boundary band)",
       "rationale": "get_all_neighbors_py's docstring positions it as an alternative implementation of the same neighbor-search contract; localizing a defect to the KD-tree path specifically (rather than get_neighbor_list) gives independent coverage of both non-deprecated neighbor-search entry points",
       "scientific_quantity": "same law as PM-STR-005, exercised through a third, independently-implemented algorithm: get_all_neighbors_py's KD-tree-based get_points_in_spheres spatial search, cross-checked against the same get_all_neighbors_old brute-force oracle",
       "source": "pymatgen/core/structure.py",

@@ -403,16 +403,20 @@ def check_composition_addition_symbol_pooling(max_diff, max_amount):
 # ---------------------------------------------------------------------------
 
 @_guard
-def check_symmop_inverse_roundtrip(point, roundtrip_point, cond, point_norm):
+def check_symmop_inverse_roundtrip(point, roundtrip_point, cond, point_norm, work_dtype=None):
     """PM-OP-001: op.inverse.operate(op.operate(point)) == point.
 
     50-trial sweep (random axis/angle/translation via
     from_axis_angle_and_translation, random points in [-5,5]^3): worst
     observed diff/(eps64*cond*max(1,|point|)) ratio was 0.52. Tolerance
-    set to 100x.
+    set to 100x. The working precision is that of the stored affine matrix
+    (SymmOp.inverse is np.linalg.inv of it, which keeps float32 in float32), so
+    a float32 operation is held to 100*eps32*cond*max(1,|point|).
     """
-    diff = np.abs(np.asarray(point) - np.asarray(roundtrip_point)).max()
-    tol = 100.0 * eps64 * max(cond, 1.0) * max(point_norm, 1.0)
+    wd = np.dtype(work_dtype) if work_dtype is not None else np.dtype(np.float64)
+    eps = max(eps64, float(np.finfo(wd).eps)) if wd.kind == "f" else eps64
+    diff = np.abs(np.asarray(point, dtype=float) - np.asarray(roundtrip_point, dtype=float)).max()
+    tol = 100.0 * eps * max(cond, 1.0) * max(point_norm, 1.0)
     trigger_if(diff > tol, "PM-OP-001", diff=diff, tol=tol)
 
 
@@ -453,7 +457,7 @@ def check_rotation_matrix_orthogonality(rotation_matrix, axis=None):
 
 
 @_guard
-def check_operate_single_vs_batch_consistency(multi_result, single_stack, term_scale):
+def check_operate_single_vs_batch_consistency(multi_result, single_stack, term_scale, work_dtype=None):
     """PM-OP-003: operate_multi(points)[i] == operate(points[i]) for every i.
 
     FIX (2026-09-17, round-1 triggerability): the original tolerance
@@ -481,7 +485,10 @@ def check_operate_single_vs_batch_consistency(multi_result, single_stack, term_s
     # The two BLAS paths can accumulate the same affine dot product in a
     # different order.  Scale against the absolute terms being summed, not
     # only the possibly tiny result after rotation/translation cancellation.
-    tol = 100.0 * eps64 * max(1.0, term_scale)
+    # Accumulation precision is that of the result (float32 operands accumulate in float32).
+    wd = np.dtype(work_dtype) if work_dtype is not None else np.dtype(np.float64)
+    eps = max(eps64, float(np.finfo(wd).eps)) if wd.kind == "f" else eps64
+    tol = 100.0 * eps * max(1.0, term_scale)
     trigger_if(diff > tol, "PM-OP-003", diff=diff, tol=tol)
 
 
@@ -808,6 +815,10 @@ def check_neighbor_search_cross_implementation(checker_id, only_in_fast, only_in
     full 1,202-case round-1 sweep plus the 817-test regression suite are
     both clean across all 30 checkers.
     """
+    # Round-10 note: the call site now excludes the cutoff boundary band
+    # (|d - r| <= max(numerical_tol, numerical_tol/(2r)) + 1e-6, the padding of both fast
+    # paths) and matches distances numerically within 1e-6 per neighbor identity instead
+    # of binning with round(d, 6); the records here are (identity, distance) pairs.
     tol = 100.0 * eps64 * max(r, 1.0)
     mismatched = bool(only_in_fast) or bool(only_in_old)
     trigger_if(mismatched, checker_id, only_in_fast=list(only_in_fast),

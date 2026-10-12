@@ -2173,79 +2173,54 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
         frac = np.asarray(self.frac_coords)
         labelled = bool(np.all((frac > -1e-8) & (frac < 1 + 1e-8)))
 
-        def finish(rows):
-            if labelled:
-                return {(i, im, d) for i, im, d in rows}
-            seen = {}
-            out = set()
-            for i, _, d in sorted(rows, key=lambda t: (t[0], t[2])):
-                k = seen.get((i, d), 0)
-                seen[(i, d)] = k + 1
-                out.add((i, (k,), d))
-            return out
+        # Cutoff boundary band, both fast paths. get_points_in_spheres (the _py path)
+        # admits `d < r + numerical_tol`; the Cython find_points_in_spheres (the
+        # get_all_neighbors path) admits `d**2 < r**2 + numerical_tol`, i.e. a padding
+        # of about numerical_tol / (2 r) in d. The oracle uses `d <= r` with no padding,
+        # so a neighbor within the padded band is a documented convention difference.
+        # 1e-6 is the distance-matching resolution below.
+        dtol = 1e-6
+        band = max(numerical_tol, numerical_tol / (2.0 * max(r, 1e-12))) + dtol
+        # Coincident distinct sites (d ~ 0) are a convention difference
+        # (oracle drops all d <= 1e-8, fast paths drop only the site itself).
+        coincident = 1e-8
 
-        def to_set(neighbors, is_old=False):
-            rows = []
-            if is_old:
-                for site, dist, idx, image in neighbors:
-                    rows.append((int(idx), tuple(int(v) for v in image), round(float(dist), 6)))
-            else:
-                for n in neighbors:
-                    rows.append((int(n.index), tuple(int(v) for v in n.image), round(float(n.nn_distance), 6)))
-            return finish(rows)
+        def grouped(neighbors, is_old=False):
+            groups: dict = {}
+            for n in neighbors:
+                if is_old:
+                    _, dist, idx, image = n
+                else:
+                    dist, idx, image = n.nn_distance, n.index, n.image
+                d = float(dist)
+                if d <= coincident or abs(d - r) <= band:
+                    continue
+                key = (int(idx), tuple(int(v) for v in image)) if labelled else (int(idx),)
+                groups.setdefault(key, []).append(d)
+            return groups
 
-        # PM-STR-006 precondition (FIX, 2026-09-19, round-1 triggerability):
-        # get_all_neighbors_py delegates to get_points_in_spheres, whose
-        # cutoff comparison is `dist < r + numerical_tol` (lattice.py), an
-        # explicitly padded/inclusive boundary -- while the oracle
-        # get_all_neighbors_old compares `all_dists <= r` with zero
-        # epsilon (structure.py). When a neighbor's true distance lands
-        # within numerical_tol of r, the two algorithms legitimately
-        # disagree about inclusion; this is a genuine, if minor,
-        # public-API boundary inconsistency in the library itself (root
-        # cause confirmed by direct source read, not a checker-tolerance
-        # defect -- see ROOT_CAUSE_ANALYSIS.md Sec. 12), so the fix scopes
-        # the PRECONDITION rather than loosening a tolerance number,
-        # mirroring PM-COMP-003's pattern: only entries whose distance is
-        # unambiguously inside or outside the cutoff are compared. This
-        # scoping applies to PM-STR-006 only -- PM-STR-005's fast path
-        # (get_all_neighbors, via the separately-compiled
-        # find_points_in_spheres Cython extension) showed zero evidence of
-        # the same boundary padding during round-1 triggerability, so
-        # narrowing its precondition too would be unjustified.
-        #
-        # FIX (2026-09-19, round-2 triggerability): the round-1 fix above
-        # excluded points within `numerical_tol` of `r`, but `to_set()`
-        # rounds distances to 6 decimal places (lines above) BEFORE this
-        # exclusion runs, while the exclusion width used the caller's raw,
-        # unrounded numerical_tol with no floor. For numerical_tol below
-        # ~5e-7 (half the 6-decimal rounding granularity), the exclusion
-        # band became narrower than the rounding noise it was meant to
-        # absorb, so genuinely ambiguous boundary points slipped through
-        # unexcluded -- confirmed by round-2's dedicated numerical_tol
-        # sweep (1e-12 to 1e-2, an axis round-1's fix and its
-        # re-verification never varied) and reproduced directly (e.g.
-        # diamond Si fires at numerical_tol=1e-8, silent at neighboring
-        # values, an exact flip at the rounding scale -- see
-        # ROOT_CAUSE_ANALYSIS.md Sec. 14). Fix: floor the exclusion width
-        # at the rounding granularity itself, so it can never be narrower
-        # than the noise `to_set()`'s own rounding introduces, regardless
-        # of how small a numerical_tol the caller passes.
-        _ROUNDING_GRANULARITY = 5e-7  # half of 10**-6, matching to_set()'s round(..., 6)
         for i in range(len(fast_result)):
-            fast_set = to_set(fast_result[i])
-            old_set = to_set(old_result[i], is_old=True)
-            if checker_id == "PM-STR-006":
-                boundary = numerical_tol + _ROUNDING_GRANULARITY
-                fast_set = {t for t in fast_set if abs(t[2] - r) > boundary}
-                old_set = {t for t in old_set if abs(t[2] - r) > boundary}
-            # Coincident distinct sites (d ~ 0) are a convention difference
-            # (oracle drops all d <= 1e-8, fast paths drop only the site itself).
-            coincident = 1e-8
-            fast_set = {t for t in fast_set if t[2] > coincident}
-            old_set = {t for t in old_set if t[2] > coincident}
-            only_fast = fast_set - old_set
-            only_old = old_set - fast_set
+            gf, go = grouped(fast_result[i]), grouped(old_result[i], is_old=True)
+            only_fast: set = set()
+            only_old: set = set()
+            # Distances are matched numerically (|dd| <= dtol) within each neighbor
+            # identity: binning with round(d, 6) flips at rounding midpoints for
+            # distances that agree to the last ulp.
+            for key in set(gf) | set(go):
+                a_, b_ = sorted(gf.get(key, [])), sorted(go.get(key, []))
+                ia = ib = 0
+                while ia < len(a_) and ib < len(b_):
+                    if abs(a_[ia] - b_[ib]) <= dtol:
+                        ia += 1
+                        ib += 1
+                    elif a_[ia] < b_[ib]:
+                        only_fast.add((key, round(a_[ia], 9)))
+                        ia += 1
+                    else:
+                        only_old.add((key, round(b_[ib], 9)))
+                        ib += 1
+                only_fast |= {(key, round(x, 9)) for x in a_[ia:]}
+                only_old |= {(key, round(x, 9)) for x in b_[ib:]}
             if only_fast or only_old:
                 _sc.check_neighbor_search_cross_implementation(
                     checker_id, only_fast, only_old, len(self), r
