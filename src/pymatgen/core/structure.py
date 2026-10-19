@@ -2182,11 +2182,21 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
         # of about numerical_tol / (2 r) in d. The oracle uses `d <= r` with no padding,
         # so a neighbor within the padded band is a documented convention difference.
         # 1e-6 is the distance-matching resolution below.
-        dtol = 1e-6
+        # Float64 resolution of the Cartesian positions (repair 2026-10-23): each path
+        # forms a distance from positions whose rounding scale is ulp(sum_i |f_i| |a_i|)
+        # (frac -> cart dot product, then a difference of two such points, then a norm),
+        # i.e. a few ulp per path and per point; 16 ulp bounds the difference of two
+        # independent paths. Sites stored 1e9..1e12 cells from the origin put this at
+        # 1e-6..1e-2 A, where both paths (and the spurious ~ulp self-image of the fast
+        # paths) differ only by round-off. It stays below 1e-8 A up to ~1e5 cells and
+        # below 1e-6 A up to ~2e7 cells, so ordinary structures keep the old cuts.
+        coord_scale = float(np.max(np.abs(frac) @ np.asarray(self.lattice.abc))) if len(self) else 0.0
+        coord_res = 16.0 * float(np.spacing(coord_scale))
+        dtol = max(1e-6, coord_res)
         band = max(numerical_tol, numerical_tol / (2.0 * max(r, 1e-12))) + dtol
         # Coincident distinct sites (d ~ 0) are a convention difference
         # (oracle drops all d <= 1e-8, fast paths drop only the site itself).
-        coincident = 1e-8
+        coincident = max(1e-8, coord_res)
         # Both fast paths also drop every image of the centre site itself (and of an
         # identical duplicate site) with d <= numerical_tol, the documented "coincident"
         # rule; the oracle keeps them. A user numerical_tol above a lattice repeat
