@@ -347,7 +347,7 @@ def check_atomic_fraction_partition(fraction_sum, n_elements, aeps=eps64):
 
 
 @_guard
-def check_weight_atomic_fraction_roundtrip(diff, n_elements, min_fraction, amount_tolerance):
+def check_weight_atomic_fraction_roundtrip(diff, n_elements, min_fraction, amount_tolerance, aeps=eps64):
     """PM-COMP-003: from_weight_dict(as_weight_dict()).fractional_composition round-trips.
 
     9-composition sweep (Element-keyed only -- as_weight_dict/
@@ -375,10 +375,19 @@ def check_weight_atomic_fraction_roundtrip(diff, n_elements, min_fraction, amoun
     precondition (silent), and isolated-sensitivity with a synthetic
     mismatch on an ordinary (no near-threshold trace element) composition
     still fires.
+
+    REPAIR 2026-10-19 (run-11 Codex): float32 amounts. The constructor stores
+    them as given and accumulates _n_atoms in float32 (int 0 + float32), so the
+    original fractional_composition is only float32-accurate ({Fe: f32(0.7),
+    Ni: f32(0.2), Cr: 0.1}: diff 1.8e-8, i.e. 0.15 eps32, vs 6.7e-14; the same
+    values as float64 give 1.1e-16). ``aeps`` is the largest eps among the
+    amounts' dtypes (amount_eps); the tolerance gets the same float32 term as
+    PM-COMP-002 (10 * (aeps - eps64) per element, the accumulation bound being
+    about n_elements * aeps). Unchanged for float64 amounts.
     """
     if min_fraction < 100.0 * amount_tolerance:
         return
-    tol = 100.0 * eps64 * max(n_elements, 1)
+    tol = (100.0 * eps64 + 10.0 * max(aeps - eps64, 0.0)) * max(n_elements, 1)
     trigger_if(diff > tol, "PM-COMP-003", diff=diff, tol=tol)
 
 

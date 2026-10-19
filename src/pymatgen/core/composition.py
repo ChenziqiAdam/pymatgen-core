@@ -901,7 +901,8 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
                     min(amt / raw_total for _, amt in self.items()) if raw_total else 1.0
                 )
                 _sc.check_weight_atomic_fraction_roundtrip(
-                    max_diff, len(self.elements), min_fraction, Composition.amount_tolerance
+                    max_diff, len(self.elements), min_fraction, Composition.amount_tolerance,
+                    _sc.amount_eps(self._data.values()),
                 )
             except Exception:
                 pass

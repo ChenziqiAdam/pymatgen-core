@@ -2169,9 +2169,12 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
 
         # The image label's reference cell is an implementation convention when a
         # site is stored outside the unit cell; in that case compare the neighbor
-        # multiset of (index, distance) instead of the labelled image.
+        # multiset of (index, distance) instead of the labelled image. The oracle
+        # wraps with np.mod(frac, 1) into the half-open [0, 1) (its docstring), so the
+        # labels share a reference cell exactly when that wrap is the identity:
+        # frac = 1.0 or -1e-12 is shifted by one cell (repair 2026-10-19).
         frac = np.asarray(self.frac_coords)
-        labelled = bool(np.all((frac > -1e-8) & (frac < 1 + 1e-8)))
+        labelled = bool(np.all(np.mod(frac, 1.0) == frac))
 
         # Cutoff boundary band, both fast paths. get_points_in_spheres (the _py path)
         # admits `d < r + numerical_tol`; the Cython find_points_in_spheres (the

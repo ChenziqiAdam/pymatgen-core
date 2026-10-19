@@ -1173,7 +1173,9 @@ class SlabGenerator:
         # (Optionally) Post-process the Slab
         # Orthogonalize the structure (through LLL lattice basis reduction)
         scale_factor = self.slab_scale_factor
-        _sc_struct_prelll = struct  # slab as stacked, before the optional LLL basis change
+        # slab as stacked, before the optional LLL basis change; a copy, because
+        # center_slab translates sites in place (PM-SURF-002 repair 2026-10-19)
+        _sc_struct_prelll = struct.copy() if _sc.enabled() else None
         if self.lll_reduce:
             # Sanitize Slab (LLL reduction + site sorting + map frac_coords)
             lll_slab = struct.copy(sanitize=True)
