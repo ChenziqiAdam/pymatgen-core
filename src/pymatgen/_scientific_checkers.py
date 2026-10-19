@@ -299,19 +299,41 @@ def check_formula_reduction_scale_invariance(reduced_orig, reduced_scaled, k):
                reduced_orig=reduced_orig, reduced_scaled=reduced_scaled, k=k)
 
 
-def amount_eps(values) -> float:
-    """Largest machine epsilon among the inexact dtypes of the supplied
-    amounts (eps64 if none): float32 amounts are stored and accumulated in
-    float32, so amount-based identities only hold to that resolution."""
+def narrow_eps(*values, ops=1.0):
+    """Unified narrow-dtype policy (2026-10-20), shared by every checker whose
+    hook receives user-supplied numbers.
+
+    Returns the unit round-off of the NARROWEST floating dtype among ``values``
+    (eps64 if none; float32/float16 inputs are checked at their own resolution,
+    never skipped), or None when an integer input can wrap in the library's own
+    arithmetic: max|x| * ops exceeds np.iinfo of its dtype, ``ops`` being the
+    growth of the largest intermediate over max|x| (number of accumulated terms,
+    times the other factor of a product). Integer wrap-around is a dtype fact,
+    not a law violation, so callers skip the check on None. Integer inputs that
+    cannot wrap are exact and leave eps64."""
     e = eps64
     try:
         for v in values:
-            dt = np.asarray(v).dtype
+            a = np.asarray(v)
+            dt = a.dtype
             if np.issubdtype(dt, np.inexact):
                 e = max(e, float(np.finfo(dt).eps))
+            elif np.issubdtype(dt, np.integer) and a.size:
+                big = float(np.max(np.abs(a.astype(np.float64))))
+                if big * max(float(ops), 1.0) > float(np.iinfo(dt).max):
+                    return None
     except Exception:
         pass
     return e
+
+
+def amount_eps(values) -> float:
+    """Largest machine epsilon among the inexact dtypes of the supplied
+    amounts (eps64 if none): float32 amounts are stored and accumulated in
+    float32, so amount-based identities only hold to that resolution.
+    (Float part of narrow_eps; integer wrap is gated by the callers.)"""
+    e = narrow_eps(*values)
+    return eps64 if e is None else e
 
 
 def composition_keys_collided(comp) -> bool:
@@ -347,7 +369,8 @@ def check_atomic_fraction_partition(fraction_sum, n_elements, aeps=eps64):
 
 
 @_guard
-def check_weight_atomic_fraction_roundtrip(diff, n_elements, min_fraction, amount_tolerance, aeps=eps64):
+def check_weight_atomic_fraction_roundtrip(diff, n_elements, min_fraction, amount_tolerance, aeps=eps64,
+                                           min_amount=0.0):
     """PM-COMP-003: from_weight_dict(as_weight_dict()).fractional_composition round-trips.
 
     9-composition sweep (Element-keyed only -- as_weight_dict/
@@ -384,8 +407,17 @@ def check_weight_atomic_fraction_roundtrip(diff, n_elements, min_fraction, amoun
     amounts' dtypes (amount_eps); the tolerance gets the same float32 term as
     PM-COMP-002 (10 * (aeps - eps64) per element, the accumulation bound being
     about n_elements * aeps). Unchanged for float64 amounts.
+
+    REPAIR 2026-10-20 (run-12 Codex): negative amounts. A bookkeeping
+    composition built with allow_negative=True ({Fe: -2, O: -3}, an amount
+    removed from a reservoir) has signed weights, and a mass fraction of a
+    removed amount has no defined sign through from_weight_dict (which returns
+    the positive Fe0.4 O0.6, diff 1.2). The law is stated for physical
+    (non-negative) compositions, so the check is skipped when ``min_amount``
+    (the smallest stored amount) is negative. Every non-negative input is
+    checked as before (the H/D isotope real bug still fires).
     """
-    if min_fraction < 100.0 * amount_tolerance:
+    if min_amount < 0 or min_fraction < 100.0 * amount_tolerance:
         return
     tol = (100.0 * eps64 + 10.0 * max(aeps - eps64, 0.0)) * max(n_elements, 1)
     trigger_if(diff > tol, "PM-COMP-003", diff=diff, tol=tol)
@@ -728,7 +760,7 @@ def check_decomposition_mass_conservation(max_element_diff, dim, cond=1.0, amoun
 # ---------------------------------------------------------------------------
 
 @_guard
-def check_ewald_eta_split_invariance(e1, e2, eta1, eta2, acc_factor, n_sites, term_scale=0.0):
+def check_ewald_eta_split_invariance(e1, e2, eta1, eta2, acc_factor, n_sites, term_scale=0.0, qeps=eps64):
     """PM-EWALD-001: total_energy is invariant to the eta real/reciprocal
     split parameter, for two EwaldSummation objects built with different
     eta (each with its own eta-dependent auto cutoffs) on the same
@@ -760,6 +792,12 @@ def check_ewald_eta_split_invariance(e1, e2, eta1, eta2, acc_factor, n_sites, te
     decimal convergence term had been extrapolated below float64's summation
     floor; the derivation covered only 4, 8, and 10. The tolerance now takes
     the maximum of that term and 1000*eps64*magnitude.
+
+    REPAIR 2026-10-20 (narrow-dtype policy): float32 site charges keep the
+    q_i q_j products in float32, so the eta-split agreement is float32-limited
+    (NaCl, charges f32(+-1): spread 5.6e-7 eV over eta in [0.1, 2] vs 1.3e-12
+    for float64). ``qeps`` (narrow_eps of the charges) replaces eps64 in the
+    rounding floor; integer charges that can wrap are skipped by the hook.
     """
     diff = abs(e1 - e2)
     # term_scale: largest magnitude among the summed Ewald terms (real, reciprocal,
@@ -770,7 +808,7 @@ def check_ewald_eta_split_invariance(e1, e2, eta1, eta2, acc_factor, n_sites, te
     # below its machine-precision floor.  The original derivation only swept
     # acc_factor <= 10 and extrapolated the decimal term below that floor.
     truncation_tol = 100.0 * (10.0 ** (-acc_factor)) * magnitude
-    rounding_tol = 1000.0 * eps64 * magnitude
+    rounding_tol = 1000.0 * max(qeps, eps64) * magnitude
     tol = max(truncation_tol, rounding_tol)
     trigger_if(diff > tol, "PM-EWALD-001", diff=diff, tol=tol,
                eta1=eta1, eta2=eta2, acc_factor=acc_factor, n_sites=n_sites)

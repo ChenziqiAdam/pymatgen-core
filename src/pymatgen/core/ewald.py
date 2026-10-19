@@ -267,9 +267,17 @@ class EwaldSummation(MSONable):
                     )
                     for o in (self, probe)
                 )
-                _sc.check_ewald_eta_split_invariance(
-                    energy, probe_energy, self._eta, probe_eta, self._acc_factor, len(self._struct), term_scale
-                )
+                # narrow-dtype policy (2026-10-20): q_i q_j products summed over the sites are formed in
+                # the charges' dtype; integer charges that can wrap there are skipped, float32 charges
+                # get the float32 rounding floor
+                qs = np.asarray(self._oxi_states)
+                q_max = float(np.max(np.abs(qs.astype(np.float64)))) if qs.size else 0.0
+                q_eps = _sc.narrow_eps(qs, ops=max(q_max, 1.0) * len(qs))
+                if q_eps is not None:
+                    _sc.check_ewald_eta_split_invariance(
+                        energy, probe_energy, self._eta, probe_eta, self._acc_factor, len(self._struct), term_scale,
+                        q_eps,
+                    )
             except Exception:
                 pass
         return energy

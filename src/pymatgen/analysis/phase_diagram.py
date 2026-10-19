@@ -778,7 +778,9 @@ class PhaseDiagram(MSONable):
                 for el, v in fc.items():
                     recon[el] = recon.get(el, 0.0) + amt * v
             target = comp.fractional_composition
-            if _sc.composition_keys_collided(comp):
+            # integer amounts that wrap while summing to the atom count (narrow_eps None) give
+            # a dtype artefact, not a decomposition error (narrow-dtype policy 2026-10-20)
+            if _sc.composition_keys_collided(comp) or _sc.narrow_eps(*comp._data.values(), ops=len(comp._data)) is None:
                 return result
             all_els = set(recon) | set(target.elements)
             max_diff = max(

@@ -315,7 +315,13 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
         for key, val in other.items():
             new_el_map[get_el_sp(key)] += val
         result = type(self)(new_el_map, allow_negative=self.allow_negative)
-        if _sc.enabled() and isinstance(other, type(self)) and other.allow_negative == self.allow_negative:
+        if (
+            _sc.enabled()
+            and isinstance(other, type(self))
+            and other.allow_negative == self.allow_negative
+            # narrow-dtype policy (2026-10-20): integer amounts whose pooled sum can wrap are skipped
+            and _sc.narrow_eps(*self._data.values(), *other._data.values(), ops=len(self) + len(other)) is not None
+        ):
             d1, d2 = self.get_el_amt_dict(), other.get_el_amt_dict()
             pooled: dict[str, float] = defaultdict(float)
             for k, v in d1.items():
@@ -589,6 +595,9 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
                 and abs(v) < 2**53 / 100
                 for v in self.values()
             )
+            # narrow-dtype policy (2026-10-20): the re-call scales by up to k=5 in the amounts' own
+            # dtype and the constructor sums the keys; skip integer amounts that would wrap there
+            all_int = all_int and _sc.narrow_eps(*self._data.values(), ops=5 * len(self._data)) is not None
             if all_int:
                 for k in (2, 3, 5):
                     scaled = self * k
@@ -681,7 +690,12 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
                     if bare and len({self._data[e] > 0 for e in group}) > 1:
                         cancels = True
                     total += sum(abs(self[e]) / self._n_atoms for e in members)
-                if not cancels and not _sc.composition_keys_collided(self):
+                # narrow-dtype policy (2026-10-20): integer amounts whose atom-count sum wraps are skipped
+                if (
+                    not cancels
+                    and not _sc.composition_keys_collided(self)
+                    and _sc.narrow_eps(*self._data.values(), ops=len(self._data)) is not None
+                ):
                     _sc.check_atomic_fraction_partition(
                         total, len(self.elements), _sc.amount_eps(self._data.values())
                     )
@@ -884,6 +898,8 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
             _sc.enabled()
             and not any(isinstance(el, Species) for el in self.elements)
             and not _sc.composition_keys_collided(self)
+            # narrow-dtype policy (2026-10-20): integer amounts whose atom-count sum wraps are skipped
+            and _sc.narrow_eps(*self._data.values(), ops=len(self._data)) is not None
         ):
             try:
                 back = Composition.from_weight_dict(wd)
@@ -903,6 +919,7 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
                 _sc.check_weight_atomic_fraction_roundtrip(
                     max_diff, len(self.elements), min_fraction, Composition.amount_tolerance,
                     _sc.amount_eps(self._data.values()),
+                    min((float(v) for v in self._data.values()), default=0.0),
                 )
             except Exception:
                 pass
@@ -1022,7 +1039,13 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
         if len(self.elements) == 1:
             return ({self.elements[0].symbol: 0.0},)
         sols = self._get_oxi_state_guesses(all_oxi_states, max_sites, oxi_states_override, target_charge)[0]
-        if _sc.enabled() and not getattr(self, "_scibench_recall", False):
+        # narrow-dtype policy (2026-10-20): the search multiplies amounts by oxidation states
+        # (|oxi| <= 9) and sums them; integer amounts that can wrap there are skipped
+        if (
+            _sc.enabled()
+            and not getattr(self, "_scibench_recall", False)
+            and _sc.narrow_eps(*self._data.values(), ops=9 * len(self._data)) is not None
+        ):
             # Weight the RETURNED (possibly max_sites-reduced-and-rescaled)
             # average oxidation states by the ORIGINAL composition's own
             # atom counts, not the (possibly reduced) composition the

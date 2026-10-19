@@ -2187,8 +2187,17 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
         # Coincident distinct sites (d ~ 0) are a convention difference
         # (oracle drops all d <= 1e-8, fast paths drop only the site itself).
         coincident = 1e-8
+        # Both fast paths also drop every image of the centre site itself (and of an
+        # identical duplicate site) with d <= numerical_tol, the documented "coincident"
+        # rule; the oracle keeps them. A user numerical_tol above a lattice repeat
+        # therefore removes real self-images by contract (repair 2026-10-20).
+        self_tol = max(coincident, float(numerical_tol)) + dtol
+        same_site = [
+            {j for j in range(len(self)) if j == i or (self_tol > coincident + dtol and self[j] == self[i])}
+            for i in range(len(self))
+        ]
 
-        def grouped(neighbors, is_old=False):
+        def grouped(neighbors, i, is_old=False):
             groups: dict = {}
             for n in neighbors:
                 if is_old:
@@ -2196,14 +2205,14 @@ class IStructure(SiteCollection[PeriodicSite], MSONable):
                 else:
                     dist, idx, image = n.nn_distance, n.index, n.image
                 d = float(dist)
-                if d <= coincident or abs(d - r) <= band:
+                if d <= coincident or abs(d - r) <= band or (d <= self_tol and int(idx) in same_site[i]):
                     continue
                 key = (int(idx), tuple(int(v) for v in image)) if labelled else (int(idx),)
                 groups.setdefault(key, []).append(d)
             return groups
 
         for i in range(len(fast_result)):
-            gf, go = grouped(fast_result[i]), grouped(old_result[i], is_old=True)
+            gf, go = grouped(fast_result[i], i), grouped(old_result[i], i, is_old=True)
             only_fast: set = set()
             only_old: set = set()
             # Distances are matched numerically (|dd| <= dtol) within each neighbor
