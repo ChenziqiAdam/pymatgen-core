@@ -69,7 +69,7 @@
       "id": "PM-COMP-001",
       "invariant": "(comp * k).reduced_formula == comp.reduced_formula for any positive integer k",
       "observation_point": "inside reduced_formula, a re-call sanitizer scales the composition by k and re-derives the reduced formula on the scaled copy, comparing strings",
-      "precondition": "any Composition whose amounts are comfortably (100x) inside amount_tolerance (1e-8) of an integer AND comfortably (100x) below float64's exact-integer ceiling (2**53), any positive integer scaling factor k in {2,3,5}, excluding special_formulas overrides (e.g. peroxides) which the code intentionally does not fully reduce; integer amounts must not wrap in their own dtype (unified narrow-dtype policy: max|amount|*ops <= np.iinfo(dtype).max with ops = 5*n_keys, the k<=5 re-call plus the constructor's sum)",
+      "precondition": "any Composition whose amounts are comfortably (100x) inside amount_tolerance (1e-8) of an integer AND comfortably (100x) below the exact-integer ceiling of the amounts' own (narrowest) float dtype (2**53 for float64 / Python floats, 2**24 for float32, 2**11 for float16), any positive integer scaling factor k in {2,3,5}, excluding special_formulas overrides (e.g. peroxides) which the code intentionally does not fully reduce; integer amounts must not wrap in their own dtype (unified narrow-dtype policy: max|amount|*ops <= np.iinfo(dtype).max with ops = 5*n_keys, the k<=5 re-call plus the constructor's sum)",
       "rationale": "formula reduction is used throughout pymatgen (deduplication, phase-diagram grouping by reduced composition, materials database keys); if reduction were not actually scale-invariant for some composition, two representations of the same physical substance would silently be treated as chemically distinct",
       "scientific_quantity": "chemical formula identity under uniform scaling of stoichiometric coefficients by a positive factor",
       "source": "pymatgen/core/composition.py",
@@ -220,7 +220,7 @@
       "symbol": "get_distance_and_image"
     },
     {
-      "alarm": "e_above_hull < -100*numerical_tol (the class's own numerical_tol constant, examined per SANITIZER.md 5.8 T rather than assumed correct for this new quantity)",
+      "alarm": "e_above_hull < -tol, tol = max(100*numerical_tol, 100*dim*eps64*M**2) with M = max |formation energy per atom| over the hull points (qhull coplanarity resolution; equals 100*numerical_tol = 1e-6 eV/atom for |formation energies| below ~3e3 eV/atom)",
       "family": "convex_hull_energy_non_negativity",
       "id": "PM-PD-001",
       "invariant": "get_e_above_hull(entry) >= -tol for any entry in qhull_entries",

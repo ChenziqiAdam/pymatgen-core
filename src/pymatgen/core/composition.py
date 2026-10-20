@@ -590,9 +590,12 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
             # ~110x past 2**53 (~9.007e15), and reduced_formula on the
             # scaled copy produced a formula bearing no numeric relation to
             # the unscaled reduction. See sanitizers.json.
+            # round 15: the exact-integer limit is that of the amounts' own (narrowest) dtype,
+            # 2**53 for float64 but 2**24 for float32 (the re-call scales in that dtype)
+            _sc_lim = _sc.exact_int_limit(*self._data.values())
             all_int = all(
                 abs(v - round(v)) < type(self).amount_tolerance / 100
-                and abs(v) < 2**53 / 100
+                and abs(v) < _sc_lim / 100
                 for v in self.values()
             )
             # narrow-dtype policy (2026-10-20): the re-call scales by up to k=5 in the amounts' own

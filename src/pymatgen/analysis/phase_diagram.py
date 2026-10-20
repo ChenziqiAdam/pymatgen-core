@@ -879,7 +879,10 @@ class PhaseDiagram(MSONable):
         e_above_hull = entry.energy_per_atom - hull_energy
 
         if _sc.enabled() and entry in self.qhull_entries:
-            _sc.check_convex_hull_energy_non_negativity(e_above_hull, PhaseDiagram.numerical_tol)
+            _sc.check_convex_hull_energy_non_negativity(
+                e_above_hull, PhaseDiagram.numerical_tol,
+                qhull_data=self.qhull_data, dim=self.dim,
+            )
 
         if allow_negative or e_above_hull >= -PhaseDiagram.numerical_tol:
             return decomp, e_above_hull

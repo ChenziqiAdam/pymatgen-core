@@ -327,6 +327,25 @@ def narrow_eps(*values, ops=1.0):
     return e
 
 
+def exact_int_limit(*values) -> float:
+    """Largest magnitude below which every integer is exactly representable in the
+    NARROWEST floating dtype among ``values``: 2**(nmant+1), i.e. 2**53 for float64
+    and Python floats, 2**24 for float32, 2**11 for float16. Integer dtypes return
+    2**53 (they are exact; their wrap-around is gated by narrow_eps). Round 15
+    (2026-10-25): PM-COMP-001's all-int gate hard-coded float64's 2**53, so float32
+    amounts of ~1e12 (integers, but beyond float32's exact range) passed it and the
+    float32 re-call ``comp * k`` rounded the scaled amounts, changing the GCD."""
+    lim = float(2**53)
+    try:
+        for v in values:
+            dt = np.asarray(v).dtype
+            if np.issubdtype(dt, np.floating):
+                lim = min(lim, float(2 ** (np.finfo(dt).nmant + 1)))
+    except Exception:
+        pass
+    return lim
+
+
 def amount_eps(values) -> float:
     """Largest machine epsilon among the inexact dtypes of the supplied
     amounts (eps64 if none): float32 amounts are stored and accumulated in
@@ -683,7 +702,7 @@ def check_pbc_distance_image_consistency(
 # ---------------------------------------------------------------------------
 
 @_guard
-def check_convex_hull_energy_non_negativity(e_above_hull, numerical_tol):
+def check_convex_hull_energy_non_negativity(e_above_hull, numerical_tol, qhull_data=None, dim=1):
     """PM-PD-001: e_above_hull >= 0 for any hull-defining (qhull_entries) entry.
 
     6-entry Fe-O phase diagram (all qhull_entries checked): worst
@@ -693,7 +712,17 @@ def check_convex_hull_energy_non_negativity(e_above_hull, numerical_tol):
     quantity (confirmed the class already relies on this same law via
     its own check_stable/exception-raising branch).
     """
-    tol = 100.0 * abs(numerical_tol)
+    # Round 15 (2026-10-25, benign fuzz): qhull merges a point into a facet when its
+    # distance is below its round-off DISTround ~ dim * eps * M, M the largest |hull
+    # coordinate| (here max |formation energy per atom|); converted back along the
+    # energy axis of a facet whose slope is itself ~M, an entry that is stable by less
+    # than ~c * eps * M**2 eV/atom is reported on (below) a neighbouring facet. Swept on
+    # binary/ternary/quaternary diagrams with energies x1e2..1e8: the hidden depth over
+    # eps * M**2 is scale-invariant, c = 12.6 / 15.7 (dim 2), 17.7 (dim 3), 80.1 (dim 4),
+    # so tol_res = 100 * dim * eps * M**2 (>= 1.25x headroom). It exceeds the 1e-6
+    # eV/atom floor only for |formation energies| above ~3e3 eV/atom (non-physical).
+    m = float(np.max(np.abs(np.asarray(qhull_data, dtype=float)[:, -1]))) if qhull_data is not None else 0.0
+    tol = max(100.0 * abs(numerical_tol), 100.0 * max(dim, 1) * eps64 * m**2)
     trigger_if(e_above_hull < -tol, "PM-PD-001", e_above_hull=e_above_hull, tol=tol)
 
 
