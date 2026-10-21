@@ -320,7 +320,8 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
             and isinstance(other, type(self))
             and other.allow_negative == self.allow_negative
             # narrow-dtype policy (2026-10-20): integer amounts whose pooled sum can wrap are skipped
-            and _sc.narrow_eps(*self._data.values(), *other._data.values(), ops=len(self) + len(other)) is not None
+            and (aeps := _sc.narrow_eps(*self._data.values(), *other._data.values(), ops=len(self) + len(other)))
+            is not None
         ):
             d1, d2 = self.get_el_amt_dict(), other.get_el_amt_dict()
             pooled: dict[str, float] = defaultdict(float)
@@ -340,7 +341,10 @@ class Composition(collections.abc.Hashable, collections.abc.Mapping, MSONable, S
             max_amount = max(
                 [abs(v) for v in [*pooled.values(), *add_dict.values(), *d1.values(), *d2.values()]] or [1.0]
             )
-            _sc.check_composition_addition_symbol_pooling(max_diff, max_amount)
+            # round 16: the narrow-dtype eps also sets the tolerance (float16 amounts summed in two orders)
+            n_terms = len(self) + len(other)
+            max_term = max([abs(float(v)) for v in [*self._data.values(), *other._data.values()]] or [0.0])
+            _sc.check_composition_addition_symbol_pooling(max_diff, max_amount, aeps, n_terms, max_term)
         return result
 
     def __sub__(self, other: object) -> Self:

@@ -100,7 +100,7 @@
       "symbol": "as_weight_dict"
     },
     {
-      "alarm": "any symbol's amount differing by more than 100*eps64*max(1, largest absolute amount among the operands, the pooled sum and the result), after removing the per-key amounts below amount_tolerance that the constructor drops",
+      "alarm": "any symbol's amount differing by more than 100*eps64*max(1, largest absolute amount among the operands, the pooled sum and the result) + n*(n-1)*(aeps-eps64)*max|stored amount|, n = n_keys(c1)+n_keys(c2), aeps = eps of the narrowest float dtype among the amounts (two summation orders of n amounts in that dtype; zero for float64), after removing the per-key amounts below amount_tolerance that the constructor drops",
       "family": "composition_addition_symbol_pooling_consistency",
       "id": "PM-COMP-004",
       "invariant": "(c1+c2).get_el_amt_dict() equals the dict obtained by independently pooling c1.get_el_amt_dict() and c2.get_el_amt_dict() key-by-key; a merged per-key amount with |amount| below Composition.amount_tolerance, which the constructor drops by design (e.g. allow_negative cancellation residue), is removed from the pooled sum",
@@ -304,7 +304,7 @@
       "symbol": "SpacegroupAnalyzer.get_symmetry_operations"
     },
     {
-      "alarm": "abs(trace(T)-trace(T_rot)) exceeds 100*(eps64*scale + scale*max(ortho_err,eps64)), where scale = max(1, |trace|, max|T|), or the analogous eigenvalue-max-deviation bound (scale = max(1, max|eig|, max|T|)), where ortho_err is R's own measured (R@R.T-I) max deviation",
+      "alarm": "abs(trace(T)-trace(T_rot)) exceeds 100*(eps64*scale + scale*max(ortho_err,eps64)), where scale = max(1, |trace|, max|T|), or the analogous eigenvalue-max-deviation bound (scale = max(1, max|eig|, max|T|)), where ortho_err is R's own measured (R@R.T-I) max deviation, computed in at least float64 (a float32 R's defect rounds to 0 in float32)",
       "family": "tensor_rotation_trace_eigenvalue_invariance",
       "id": "PM-TENS-001",
       "invariant": "trace(tensor.rotate(R)) is close to trace(tensor), and sorted(eigvalsh(tensor.rotate(R))) is close to sorted(eigvalsh(tensor)), for any R accepted by rotate's own precondition",

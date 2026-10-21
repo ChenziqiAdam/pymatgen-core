@@ -142,7 +142,11 @@ class Tensor(np.ndarray, MSONable):
                 trace0, trace1 = np.trace(arr0), np.trace(arr1)
                 eig0 = np.linalg.eigvalsh((arr0 + arr0.conj().T) / 2)
                 eig1 = np.linalg.eigvalsh((arr1 + arr1.conj().T) / 2)
+                # round 16: measure R's orthogonality defect in at least float64. A float32
+                # small-angle R has R@R.T == I exactly in float32 (defect rounds to 0) while
+                # its true defect, which the float64 congruence propagates, is 3e-10..3e-8.
                 R = np.asarray(matrix)
+                R = R.astype(np.result_type(R.dtype, np.float64))
                 ortho_err = np.abs(R @ R.T - np.eye(3)).max()
                 _sc.check_tensor_rotation_trace_eigenvalue_invariance(
                     trace0, trace1, eig0, eig1, ortho_err, float(np.abs(arr0).max())

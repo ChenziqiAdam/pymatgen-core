@@ -443,7 +443,7 @@ def check_weight_atomic_fraction_roundtrip(diff, n_elements, min_fraction, amoun
 
 
 @_guard
-def check_composition_addition_symbol_pooling(max_diff, max_amount):
+def check_composition_addition_symbol_pooling(max_diff, max_amount, aeps=eps64, n_terms=2, max_term=0.0):
     """PM-COMP-004: (c1+c2).get_el_amt_dict() == pooled symbol-keyed sum.
 
     45-pair sweep (all pairs among 10 compositions with matching
@@ -454,7 +454,17 @@ def check_composition_addition_symbol_pooling(max_diff, max_amount):
     # max_amount is the largest magnitude entering the pooled sums (operands and
     # sum): the pooled subtraction/addition rounds at eps64 * that magnitude,
     # even when the result is small after cancellation.
+    #
+    # REPAIR 2026-10-26 (run-15 Codex): the hook used narrow_eps only as a gate,
+    # so float16 amounts were held to eps64 ({Fe2+: .1, Fe3+: .2} + {Fe2+: .3,
+    # Fe3+: .4}: production 0.9995 vs pooled 0.9998, one float16 ulp 2**-11 from
+    # a different summation order). Production and the pooled reference each add
+    # the same n_terms amounts in the amounts' own dtype, in different orders;
+    # each order errs by <= (n_terms-1) * (aeps/2) * sum|amount| <= (n_terms-1) *
+    # (aeps/2) * n_terms * max_term, so they differ by <= n_terms*(n_terms-1)*
+    # aeps*max_term. Only the excess over eps64 is added: float64 is unchanged.
     tol = 100.0 * eps64 * max(max_amount, 1.0)
+    tol += n_terms * max(n_terms - 1, 1) * max(aeps - eps64, 0.0) * max_term
     trigger_if(max_diff > tol, "PM-COMP-004", diff=max_diff, tol=tol)
 
 
