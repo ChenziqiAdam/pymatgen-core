@@ -401,7 +401,8 @@ class SpacegroupAnalyzer:
                     if best > max_residual:
                         max_residual = best
             _sc.check_periodic_symmop_atom_correspondence(
-                max_residual, self._symprec, len(sym_ops), len(struct), rounding_bound
+                max_residual, self._symprec, len(sym_ops), len(struct), rounding_bound,
+                float(np.linalg.norm(5.1e-4 * abs_matrix.sum(axis=0))),
             )
         except Exception:
             pass

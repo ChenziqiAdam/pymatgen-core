@@ -916,7 +916,7 @@ def check_neighbor_search_cross_implementation(checker_id, only_in_fast, only_in
 # ---------------------------------------------------------------------------
 
 @_guard
-def check_periodic_symmop_atom_correspondence(max_residual, symprec, n_ops, n_sites, rounding_bound=1.0):
+def check_periodic_symmop_atom_correspondence(max_residual, symprec, n_ops, n_sites, rounding_bound=1.0, snap_bound=0.0):
     """PM-SYM-001: every spglib-sourced periodic symmetry operation
     returned by get_symmetry_operations() actually maps every site onto a
     site of the same species (periodic/minimum-image match), independent
@@ -944,7 +944,10 @@ def check_periodic_symmop_atom_correspondence(max_residual, symprec, n_ops, n_si
     # at which float evaluation of op.operate(f) - f is only good to
     # eps64 * rounding_bound (large integer rotation entries in strongly
     # sheared bases make this far larger than 1 Angstrom).
-    tol = max(10.0 * symprec, 100.0 * eps64 * max(1.0, rounding_bound))
+    # snap_bound: get_symmetry_operations() deliberately snaps every translation to a rational with denominator
+    # <= 1000 (Fraction.limit_denominator), so a genuine offset below ~5e-4 in fractional units is moved by design,
+    # independent of symprec; the law is only meaningful above that resolution (Angstrom, from the lattice).
+    tol = max(10.0 * symprec, 100.0 * eps64 * max(1.0, rounding_bound), snap_bound)
     trigger_if(max_residual > tol, "PM-SYM-001", max_residual=max_residual,
                tol=tol, symprec=symprec, n_ops=n_ops, n_sites=n_sites)
 
